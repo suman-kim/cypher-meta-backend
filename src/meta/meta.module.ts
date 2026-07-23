@@ -4,11 +4,12 @@ import { Match, MatchPlayer, CollectionState } from "../database/entities";
 import { NeopleModule } from "../neople/neople.module";
 import { MetaService } from "./meta.service";
 import { CollectorService } from "./collector.service";
+import { SchedulerService } from "./scheduler.service";
 import { MetaController } from "./meta.controller";
 
 @Module({
   imports: [TypeOrmModule.forFeature([Match, MatchPlayer, CollectionState]), NeopleModule],
   controllers: [MetaController],
-  providers: [MetaService, CollectorService],
+  providers: [MetaService, CollectorService, SchedulerService],
 })
 export class MetaModule {}

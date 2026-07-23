@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Post, Query } from "@nestjs/common";
+import { Controller, Get, Headers, Param, Post, Query, UnauthorizedException } from "@nestjs/common";
 import { MetaService } from "./meta.service";
 import { CollectorService } from "./collector.service";
 
@@ -35,6 +35,24 @@ export class MetaController {
       rankers: rankers ? Number(rankers) : undefined,
       perPlayer: perPlayer ? Number(perPlayer) : undefined,
       gameTypeId,
+    });
+  }
+
+  /**
+   * Vercel Cron 전용 수집 트리거 (GET). vercel.json crons 에서 호출.
+   * CRON_SECRET 이 설정되면 Vercel이 보내는 `Authorization: Bearer <secret>` 를 검증.
+   * 서버리스 타임아웃 고려해 기본 표본을 작게(8/8) 잡고, .env 로 조절.
+   */
+  @Get("cron/collect")
+  cronCollect(@Headers("authorization") auth?: string) {
+    const secret = process.env.CRON_SECRET;
+    if (secret && auth !== `Bearer ${secret}`) {
+      throw new UnauthorizedException("invalid cron secret");
+    }
+    return this.collector.collect({
+      rankers: Number(process.env.META_COLLECT_RANKERS) || 8,
+      perPlayer: Number(process.env.META_COLLECT_PER_PLAYER) || 8,
+      gameTypeId: process.env.META_COLLECT_GAME_TYPE ?? "rating",
     });
   }
 }
