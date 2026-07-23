@@ -8,6 +8,7 @@ import { CollectionState } from "./collection-state.entity";
 import { Post } from "./post.entity";
 import { Comment } from "./comment.entity";
 import { Visit } from "./visit.entity";
+import { Vote } from "./vote.entity";
 
 export const entities = [
   ApiCache,
@@ -20,6 +21,7 @@ export const entities = [
   Post,
   Comment,
   Visit,
+  Vote,
 ];
 
 export {
@@ -33,4 +35,5 @@ export {
   Post,
   Comment,
   Visit,
+  Vote,
 };

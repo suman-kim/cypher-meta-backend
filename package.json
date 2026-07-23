@@ -1,5 +1,5 @@
 {
-  "name": "cyphers-api",
+  "name": "cypher-meta-api",
   "version": "0.1.0",
   "private": true,
   "description": "Cyphers 통계 플랫폼 백엔드 (NestJS + TypeORM + Postgres)",

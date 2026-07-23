@@ -7,6 +7,7 @@ import { NeopleModule } from "./neople/neople.module";
 import { MetaModule } from "./meta/meta.module";
 import { CommunityModule } from "./community/community.module";
 import { AnalyticsModule } from "./analytics/analytics.module";
+import { VotesModule } from "./votes/votes.module";
 
 @Module({
   imports: [
@@ -46,6 +47,7 @@ import { AnalyticsModule } from "./analytics/analytics.module";
     MetaModule,
     CommunityModule,
     AnalyticsModule,
+    VotesModule,
   ],
   controllers: [HealthController],
 })

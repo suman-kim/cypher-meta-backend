@@ -14,6 +14,11 @@ export class MetaController {
     return this.meta.summary();
   }
 
+  @Get("roster")
+  roster() {
+    return this.meta.roster();
+  }
+
   @Get("characters")
   characters(@Query("gameTypeId") gameTypeId?: string) {
     return this.meta.characterStats(gameTypeId);
@@ -22,6 +27,20 @@ export class MetaController {
   @Get("characters/:id/items")
   items(@Param("id") id: string) {
     return this.meta.characterItems(id);
+  }
+
+  /** 5인(풀팀) 조합 집계 — 빈도/승률. 예: GET /api/meta/compositions?limit=6&minGames=3 */
+  @Get("compositions")
+  compositions(
+    @Query("gameTypeId") gameTypeId?: string,
+    @Query("limit") limit?: string,
+    @Query("minGames") minGames?: string,
+  ) {
+    return this.meta.compositions({
+      gameTypeId: gameTypeId || undefined,
+      limit: limit ? Number(limit) : undefined,
+      minGames: minGames ? Number(minGames) : undefined,
+    });
   }
 
   /** 수집 트리거 (수동). 예: POST /api/meta/collect?rankers=20&perPlayer=10 */

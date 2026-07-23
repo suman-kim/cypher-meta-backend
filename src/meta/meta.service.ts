@@ -2,6 +2,7 @@ import { Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { DataSource, Repository } from "typeorm";
 import { Match, MatchPlayer, CollectionState } from "../database/entities";
+import { classifyRole } from "./character-roles";
 import { NeopleService } from "../neople/neople.service";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -10,11 +11,24 @@ import { NeopleService } from "../neople/neople.service";
 export class MetaService {
   constructor(
     private readonly dataSource: DataSource,
-    private readonly neople: NeopleService,
     @InjectRepository(Match) private readonly matchRepo: Repository<Match>,
     @InjectRepository(MatchPlayer) private readonly mpRepo: Repository<MatchPlayer>,
     @InjectRepository(CollectionState) private readonly stateRepo: Repository<CollectionState>,
+    private readonly neople: NeopleService,
   ) {}
+
+  /** 전체 캐릭터 로스터 (역할 포함) — 투표 캐릭터 선택 UI 용. */
+  async roster() {
+    const raw: any = await this.neople.proxy("/characters");
+    const rows: any[] = Array.isArray(raw?.rows) ? raw.rows : Array.isArray(raw) ? raw : [];
+    return rows
+      .map((r) => ({
+        characterId: String(r?.characterId ?? ""),
+        characterName: r?.characterName ?? null,
+        role: classifyRole(r?.characterName),
+      }))
+      .filter((r) => r.characterId);
+  }
 
   async summary() {
     const matches = await this.matchRepo.count();
@@ -38,14 +52,6 @@ export class MetaService {
       where = `WHERE "gameTypeId" = $1`;
       params.push(gameTypeId);
     }
-
-    // 픽률 분모: 표본 전체의 고유 매치 수 (판 기준 등장률)
-    const totalRow: any[] = await this.dataSource.query(
-      `SELECT count(distinct "matchId")::int AS c FROM match_players ${where}`,
-      params,
-    );
-    const totalMatches = totalRow[0]?.c || 1;
-
     const rows: any[] = await this.dataSource.query(
       `
       SELECT "characterId",
@@ -58,17 +64,23 @@ export class MetaService {
              round(avg("assistCount")::numeric, 2)::float AS "avgAssist"
       FROM match_players ${where}
       GROUP BY "characterId"
-      ORDER BY "matchCount" DESC
+      ORDER BY picks DESC
       `,
       params,
     );
+    const totalRow: any[] = await this.dataSource.query(
+      `SELECT count(distinct "matchId")::int AS t FROM match_players ${where}`,
+      params,
+    );
+    const totalMatches = totalRow[0]?.t || 1;
+
     return rows.map((r) => ({
       characterId: r.characterId,
       characterName: r.characterName,
+      role: classifyRole(r.characterName),
       picks: r.picks,
       matchCount: r.matchCount,
       wins: r.wins,
-      // 판 기준 등장률: 이 캐릭터가 등장한 매치 수 / 전체 매치 수
       pickRate: Math.round((r.matchCount / totalMatches) * 1000) / 10,
       winRate: Math.round((r.wins / r.picks) * 1000) / 10,
       kda: Math.round(((r.avgKill + r.avgAssist) / Math.max(r.avgDeath, 1)) * 100) / 100,
@@ -80,20 +92,20 @@ export class MetaService {
 
   async characterItems(characterId: string) {
     const picks = await this.mpRepo.count({ where: { characterId } });
-    // 매치 아이템에는 slotName이 없어 equipSlotCode(장착 위치)로 그룹화한다.
     const rows: any[] = await this.dataSource.query(
       `
-      SELECT it->>'equipSlotCode' AS "equipSlotCode",
-             it->>'slotCode' AS "slotCode",
-             it->>'itemId' AS "itemId",
+      SELECT it->>'itemId' AS "itemId",
              max(it->>'itemName') AS "itemName",
+             max(it->>'slotName') AS "slotName",
+             max(it->>'slotCode') AS "slotCode",
+             max(it->>'equipSlotCode') AS "equipSlotCode",
              max(it->>'rarityCode') AS "rarityCode",
              count(*)::int AS cnt
       FROM match_players mp, jsonb_array_elements(mp.items) it
       WHERE mp."characterId" = $1
         AND mp.items IS NOT NULL
         AND jsonb_typeof(mp.items) = 'array'
-      GROUP BY it->>'equipSlotCode', it->>'slotCode', it->>'itemId'
+      GROUP BY it->>'itemId'
       ORDER BY cnt DESC
       `,
       [characterId],
@@ -101,57 +113,139 @@ export class MetaService {
 
     const rate = (cnt: number) => (picks ? Math.round((cnt / picks) * 1000) / 10 : 0);
 
-    // equipSlotCode 별 그룹
-    const bySlot = new Map<string, any[]>();
+    // 슬롯(부위)별 그룹 — equipSlotCode 기준
+    const slotMap = new Map<
+      string,
+      {
+        equipSlotCode: string;
+        slotCode: string | null;
+        slotName: string | null;
+        items: { itemId: string; itemName: string | null; rarityCode: string | null; count: number; rate: number }[];
+      }
+    >();
     for (const r of rows) {
-      const code = r.equipSlotCode ?? r.slotCode ?? "?";
-      if (!bySlot.has(code)) bySlot.set(code, []);
-      bySlot.get(code)!.push(r);
-    }
-
-    // 각 슬롯 대표 아이템으로 slotName 조회 (아이템 상세, 캐시). 키/네트워크 없으면 null.
-    const topItemIds = [...bySlot.values()].map((items) => items[0]?.itemId).filter(Boolean);
-    const slotNames = await this.resolveSlotNames(topItemIds);
-
-    const slots = [...bySlot.entries()].map(([equipSlotCode, items]) => ({
-      equipSlotCode,
-      slotCode: items[0]?.slotCode ?? null,
-      slotName: slotNames.get(items[0]?.itemId) ?? null,
-      items: items.slice(0, 6).map((r) => ({
+      const key = r.equipSlotCode ?? r.slotCode ?? r.slotName ?? "etc";
+      let slot = slotMap.get(key);
+      if (!slot) {
+        slot = {
+          equipSlotCode: r.equipSlotCode ?? r.slotCode ?? "",
+          slotCode: r.slotCode ?? null,
+          slotName: r.slotName ?? null,
+          items: [],
+        };
+        slotMap.set(key, slot);
+      }
+      slot.items.push({
         itemId: r.itemId,
         itemName: r.itemName,
-        rarityCode: r.rarityCode,
+        rarityCode: r.rarityCode ?? null,
+        count: r.cnt,
+        rate: rate(r.cnt),
+      });
+    }
+    const slots = [...slotMap.values()]
+      .map((s) => ({ ...s, items: s.items.sort((a, b) => b.count - a.count) }))
+      .sort((a, b) => (a.equipSlotCode < b.equipSlotCode ? -1 : a.equipSlotCode > b.equipSlotCode ? 1 : 0));
+
+    return {
+      characterId,
+      picks,
+      slots,
+      items: rows.slice(0, 24).map((r) => ({
+        itemId: r.itemId,
+        itemName: r.itemName,
+        slotName: r.slotName,
+        rarityCode: r.rarityCode ?? null,
         count: r.cnt,
         rate: rate(r.cnt),
       })),
-    }));
-
-    // 평면 상위 목록(호환용)
-    const items = rows.slice(0, 24).map((r) => ({
-      itemId: r.itemId,
-      itemName: r.itemName,
-      slotName: slotNames.get(r.itemId) ?? null,
-      rarityCode: r.rarityCode,
-      count: r.cnt,
-      rate: rate(r.cnt),
-    }));
-
-    return { characterId, picks, slots, items };
+    };
   }
 
-  /** 아이템 상세(/battleitems/:id)에서 slotName 을 조회 (프록시 캐시 활용). 실패 시 생략. */
-  private async resolveSlotNames(itemIds: string[]): Promise<Map<string, string>> {
-    const map = new Map<string, string>();
-    await Promise.all(
-      [...new Set(itemIds)].map(async (id) => {
-        try {
-          const detail: any = await this.neople.proxy(`/battleitems/${encodeURIComponent(id)}`);
-          if (detail?.slotName) map.set(id, String(detail.slotName));
-        } catch {
-          /* 키/네트워크 없거나 조회 실패 — slotName 없이 진행 */
-        }
-      }),
-    );
-    return map;
+  /**
+   * 팀 조합(풀팀) 집계.
+   * 팀 = 같은 매치에서 결과(win/lose)가 같은 플레이어들의 캐릭터 집합.
+   * 표준 팀 인원(데이터상 최빈값, 보통 5)을 '풀팀'으로 보고 그 크기의 조합만 집계한다.
+   * 빈도(등장 팀 수)와 승률(win 팀 비율)을 함께 반환한다.
+   */
+  async compositions(opts: { gameTypeId?: string; limit?: number; minGames?: number } = {}) {
+    const gameTypeId = opts.gameTypeId ?? "rating";
+    const limit = Math.min(Math.max(opts.limit ?? 6, 1), 30);
+    const minGames = Math.max(opts.minGames ?? 3, 1);
+
+    // 매치×결과 단위로 팀을 복원. 캐릭터명 기준 정렬로 같은 조합은 동일 순서 보장.
+    const teams: Array<{ ids: string[]; names: string[]; size: number; result: string }> =
+      await this.dataSource.query(
+        `
+        SELECT array_agg("characterId" ORDER BY "characterName") AS ids,
+               array_agg("characterName" ORDER BY "characterName") AS names,
+               count(*)::int AS size,
+               result
+        FROM match_players
+        WHERE result IN ('win', 'lose')
+          AND "characterName" IS NOT NULL
+          AND "gameTypeId" = $1
+        GROUP BY "matchId", result
+        `,
+        [gameTypeId],
+      );
+
+    // 풀팀 크기 = 팀 인원 최빈값
+    const sizeCount = new Map<number, number>();
+    for (const t of teams) sizeCount.set(t.size, (sizeCount.get(t.size) ?? 0) + 1);
+    let teamSize = 5;
+    let best = -1;
+    for (const [size, n] of sizeCount) {
+      if (n > best) {
+        best = n;
+        teamSize = size;
+      }
+    }
+
+    // 풀팀만 조합 시그니처로 집계
+    const combos = new Map<
+      string,
+      { ids: string[]; names: string[]; games: number; wins: number }
+    >();
+    let fullTeams = 0;
+    for (const t of teams) {
+      if (t.size !== teamSize) continue;
+      fullTeams++;
+      const sig = t.ids.join("-");
+      let entry = combos.get(sig);
+      if (!entry) {
+        entry = { ids: t.ids, names: t.names, games: 0, wins: 0 };
+        combos.set(sig, entry);
+      }
+      entry.games++;
+      if (t.result === "win") entry.wins++;
+    }
+
+    const all = [...combos.values()].map((c) => ({
+      ids: c.ids,
+      names: c.names,
+      games: c.games,
+      wins: c.wins,
+      winRate: c.games ? Math.round((c.wins / c.games) * 1000) / 10 : 0,
+    }));
+
+    const byFrequency = [...all]
+      .sort((a, b) => b.games - a.games || b.winRate - a.winRate)
+      .slice(0, limit);
+
+    const byWinRate = all
+      .filter((c) => c.games >= minGames)
+      .sort((a, b) => b.winRate - a.winRate || b.games - a.games)
+      .slice(0, limit);
+
+    return {
+      gameTypeId,
+      teamSize,
+      totalTeams: fullTeams,
+      distinctCombos: combos.size,
+      minGames,
+      byFrequency,
+      byWinRate,
+    };
   }
 }
