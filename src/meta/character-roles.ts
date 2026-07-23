@@ -20,7 +20,7 @@ export const ROLE_BY_NAME: Record<string, CharacterRole> = {
   카인: "ranged",
   레나: "tank",
   드렉슬러: "ranged",
-  도일: "melee",
+  도일: "tank",
   토마스: "ranged",
   나이오비: "ranged",
   시바: "melee",
@@ -96,7 +96,7 @@ export const ROLE_BY_NAME: Record<string, CharacterRole> = {
   루카: "melee",
   "앤지 헌트": "ranged",
   엔데카: "tank",
-  오데트: "ranged",
+  오데트: "support",
 };
 
 export const ROLE_LABELS: Record<RoleOrEtc, string> = {
