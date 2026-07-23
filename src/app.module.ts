@@ -6,10 +6,16 @@ import { entities } from "./database/entities";
 import { NeopleModule } from "./neople/neople.module";
 import { MetaModule } from "./meta/meta.module";
 import { CommunityModule } from "./community/community.module";
+import { AnalyticsModule } from "./analytics/analytics.module";
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      // NODE_ENV 에 따라 .env.development / .env.production 을 로드.
+      // (Vercel은 NODE_ENV=production → .env.production 파일이 없으므로 대시보드 env 사용)
+      envFilePath: `.env.${process.env.NODE_ENV ?? "development"}`,
+    }),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (c: ConfigService): TypeOrmModuleOptions => {
@@ -39,6 +45,7 @@ import { CommunityModule } from "./community/community.module";
     NeopleModule,
     MetaModule,
     CommunityModule,
+    AnalyticsModule,
   ],
   controllers: [HealthController],
 })

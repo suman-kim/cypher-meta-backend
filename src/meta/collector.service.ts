@@ -20,18 +20,24 @@ export class CollectorService {
     private readonly dataSource: DataSource,
   ) {}
 
-  async collect(opts: { rankers?: number; perPlayer?: number; gameTypeId?: string } = {}) {
+  async collect(
+    opts: { rankers?: number; perPlayer?: number; gameTypeId?: string; offset?: number } = {},
+  ) {
     if (this.running) return { status: "already_running" };
     this.running = true;
-    const rankers = Math.min(Math.max(opts.rankers ?? 20, 1), 100);
+    // Neople 랭킹 API 는 limit 최대 1000 지원 → 상위 N명(offset 시작)까지 수집 가능.
+    const rankers = Math.min(Math.max(opts.rankers ?? 20, 1), 1000);
     const perPlayer = Math.min(Math.max(opts.perPlayer ?? 10, 1), 30);
+    const offset = Math.max(opts.offset ?? 0, 0);
     const gameTypeId = opts.gameTypeId ?? "rating";
     let scanned = 0;
     let collected = 0;
     let playerRows = 0;
 
     try {
-      const ranking: any = await this.neople.proxy(`/ranking/ratingpoint?limit=${rankers}`);
+      const ranking: any = await this.neople.proxy(
+        `/ranking/ratingpoint?offset=${offset}&limit=${rankers}`,
+      );
       const rows = Array.isArray(ranking?.rows) ? ranking.rows : [];
       const playerIds: string[] = rows
         .map((r: any) => r?.playerId ?? r?.player?.playerId)
@@ -79,6 +85,7 @@ export class CollectorService {
       const value = {
         lastRun: new Date().toISOString(),
         rankers,
+        offset,
         perPlayer,
         gameTypeId,
         scanned,
@@ -91,5 +98,40 @@ export class CollectorService {
     } finally {
       this.running = false;
     }
+  }
+
+  /**
+   * 회전 수집 (Vercel Cron 용). collection_state 에 커서를 저장해두고,
+   * 매 호출마다 상위 [offset, offset+window) 구간을 수집한 뒤 커서를 window 만큼 전진.
+   * offset 이 maxRank 에 도달하면 0 으로 되돌아간다 (1위부터 다시).
+   * 예: window=10, maxRank=500 → 하루 10명씩 → 50일에 한 바퀴 순회.
+   */
+  async collectRotating(
+    opts: { window?: number; perPlayer?: number; gameTypeId?: string; maxRank?: number } = {},
+  ) {
+    const window = Math.min(Math.max(opts.window ?? 10, 1), 100);
+    const maxRank = Math.max(opts.maxRank ?? 500, window);
+
+    const cursorRow = await this.stateRepo.findOne({ where: { key: "meta_cron_cursor" } });
+    const offset = Math.max(Number((cursorRow?.value as any)?.offset) || 0, 0);
+
+    const result: any = await this.collect({
+      rankers: window,
+      perPlayer: opts.perPlayer,
+      gameTypeId: opts.gameTypeId,
+      offset,
+    });
+
+    // 이미 실행 중이면 커서를 전진시키지 않는다.
+    if (result?.status === "already_running") return result;
+
+    let next = offset + window;
+    if (next >= maxRank) next = 0;
+    await this.stateRepo.save({
+      key: "meta_cron_cursor",
+      value: { offset: next, lastCollectedOffset: offset, window, maxRank },
+    });
+
+    return { ...result, mode: "rotating", collectedOffset: offset, nextOffset: next, window, maxRank };
   }
 }

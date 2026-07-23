@@ -30,18 +30,20 @@ export class MetaController {
     @Query("rankers") rankers?: string,
     @Query("perPlayer") perPlayer?: string,
     @Query("gameTypeId") gameTypeId?: string,
+    @Query("offset") offset?: string,
   ) {
     return this.collector.collect({
       rankers: rankers ? Number(rankers) : undefined,
       perPlayer: perPlayer ? Number(perPlayer) : undefined,
       gameTypeId,
+      offset: offset ? Number(offset) : undefined,
     });
   }
 
   /**
-   * Vercel Cron 전용 수집 트리거 (GET). vercel.json crons 에서 호출.
+   * Vercel Cron 전용 회전 수집 트리거 (GET). vercel.json crons 에서 호출.
    * CRON_SECRET 이 설정되면 Vercel이 보내는 `Authorization: Bearer <secret>` 를 검증.
-   * 서버리스 타임아웃 고려해 기본 표본을 작게(8/8) 잡고, .env 로 조절.
+   * 매 호출마다 상위 window명씩 구간을 이동하며 수집(커서는 DB에 저장), maxRank 도달 시 1위부터 다시.
    */
   @Get("cron/collect")
   cronCollect(@Headers("authorization") auth?: string) {
@@ -49,10 +51,11 @@ export class MetaController {
     if (secret && auth !== `Bearer ${secret}`) {
       throw new UnauthorizedException("invalid cron secret");
     }
-    return this.collector.collect({
-      rankers: Number(process.env.META_COLLECT_RANKERS) || 8,
-      perPlayer: Number(process.env.META_COLLECT_PER_PLAYER) || 8,
+    return this.collector.collectRotating({
+      window: Number(process.env.META_CRON_WINDOW) || 10,
+      perPlayer: Number(process.env.META_COLLECT_PER_PLAYER) || 10,
       gameTypeId: process.env.META_COLLECT_GAME_TYPE ?? "rating",
+      maxRank: Number(process.env.META_CRON_MAX_RANK) || 500,
     });
   }
 }

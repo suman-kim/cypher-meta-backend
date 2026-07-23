@@ -7,6 +7,7 @@ import { MatchPlayer } from "./match-player.entity";
 import { CollectionState } from "./collection-state.entity";
 import { Post } from "./post.entity";
 import { Comment } from "./comment.entity";
+import { Visit } from "./visit.entity";
 
 export const entities = [
   ApiCache,
@@ -18,6 +19,7 @@ export const entities = [
   CollectionState,
   Post,
   Comment,
+  Visit,
 ];
 
 export {
@@ -30,4 +32,5 @@ export {
   CollectionState,
   Post,
   Comment,
+  Visit,
 };

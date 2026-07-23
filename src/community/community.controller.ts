@@ -30,6 +30,12 @@ export class CommunityController {
     return this.svc.notices(limit ? Number(limit) : 5);
   }
 
+  /** 전체 게시판 최신 글(홈용) */
+  @Get("recent")
+  recent(@Query("limit") limit?: string) {
+    return this.svc.recent(limit ? Number(limit) : 5);
+  }
+
   /** 게시글 상세(+댓글). 조회수 증가 */
   @Get("posts/:id")
   detail(@Param("id") id: string) {
