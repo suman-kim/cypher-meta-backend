@@ -21,7 +21,7 @@ export const ROLE_BY_NAME: Record<string, CharacterRole> = {
   레나: "tank",
   드렉슬러: "ranged",
   도일: "tank",
-  토마스: "ranged",
+  토마스: "support",
   나이오비: "ranged",
   시바: "melee",
   웨슬리: "ranged",
