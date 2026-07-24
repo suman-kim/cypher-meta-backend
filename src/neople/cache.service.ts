@@ -43,6 +43,17 @@ export class CacheService {
    * @param ttlSeconds — 유효 기간(초)
    * @returns 없음(저장 완료 시 resolve)
    */
+  /**
+   * 캐시 항목의 만료 시각을 반환한다(마지막 저장 시각 추정에 사용). 없거나 만료면 null.
+   * @param key — 조회할 캐시 키
+   */
+  async expiresAt(key: string): Promise<Date | null> {
+    const row = await this.repo.findOne({ where: { cacheKey: key } });
+    if (!row) return null;
+    if (row.expiresAt.getTime() < Date.now()) return null;
+    return row.expiresAt;
+  }
+
   async set(key: string, payload: unknown, ttlSeconds: number): Promise<void> {
     const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
     // 주의: 같은 캐시 키에 대한 동시 요청이 둘 다 캐시 미스로 INSERT 를 시도하면

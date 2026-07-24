@@ -10,6 +10,7 @@ import { TypeOrmModule, TypeOrmModuleOptions } from "@nestjs/typeorm";
 import { HealthController } from "./health.controller";
 import { entities } from "./database/entities";
 import { NeopleModule } from "./neople/neople.module";
+import { ChzzkModule } from "./chzzk/chzzk.module";
 import { MetaModule } from "./meta/meta.module";
 import { CommunityModule } from "./community/community.module";
 import { AnalyticsModule } from "./analytics/analytics.module";
@@ -56,6 +57,7 @@ import { CostumesModule } from "./costumes/costumes.module";
       },
     }),
     NeopleModule, // Neople API 프록시·캐시 기능
+    ChzzkModule, // 치지직(CHZZK) '사이퍼즈' 라이브 조회 기능
     MetaModule, // 메타(통계/랭킹 등) 기능
     CommunityModule, // 커뮤니티 기능
     AnalyticsModule, // 방문/이벤트 트래킹·통계 기능

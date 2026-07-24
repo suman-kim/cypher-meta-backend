@@ -71,10 +71,13 @@ export class NeopleService {
    * @param subPath — /api/cy 접두사를 제거한 하위 경로(쿼리스트링 포함, apikey 제외)
    * @returns Neople API 응답 본문(JSON). 캐시 히트 시 캐시된 값.
    */
-  async proxy(subPath: string): Promise<unknown> {
+  async proxy(subPath: string, opts?: { fresh?: boolean }): Promise<unknown> {
     const cacheKey = subPath;
-    const cached = await this.cache.get(cacheKey);
-    if (cached !== null) return cached;
+    // fresh=true 면 캐시 조회를 건너뛰고 항상 원본에서 새로 받아온다(아래에서 캐시는 갱신).
+    if (!opts?.fresh) {
+      const cached = await this.cache.get(cacheKey);
+      if (cached !== null) return cached;
+    }
 
     const sep = subPath.includes("?") ? "&" : "?";
     const url = `${BASE}${subPath}${sep}apikey=${encodeURIComponent(this.apiKey())}`;
@@ -103,5 +106,17 @@ export class NeopleService {
 
     await this.cache.set(cacheKey, body, ttlForPath(subPath.split("?")[0]));
     return body;
+  }
+
+  /**
+   * 해당 경로 캐시가 마지막으로 저장된(=원본에서 받아온) 시각을 ISO 문자열로 반환.
+   * expiresAt 에서 경로별 TTL 을 빼서 계산한다. 캐시가 없으면 null.
+   * @param subPath — 캐시 키(하위 경로+쿼리)
+   */
+  async cachedAt(subPath: string): Promise<string | null> {
+    const exp = await this.cache.expiresAt(subPath);
+    if (!exp) return null;
+    const ttlMs = ttlForPath(subPath.split("?")[0]) * 1000;
+    return new Date(exp.getTime() - ttlMs).toISOString();
   }
 }

@@ -329,7 +329,7 @@ export class MetaService {
       entry.games++;
       if (t.result === "win") entry.wins++;
     }
-    console.log(combos);
+
 
     // 조합 빈도 분포 요약 — "왜 빈도가 낮은지" 사용자에게 설명하기 위한 지표.
     // 조합 = 5명 전원이 정확히 같은 팀. 캐릭터 수가 많아 정확 일치가 드물어 대부분 1~2판이다.
