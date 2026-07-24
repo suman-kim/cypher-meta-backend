@@ -8,9 +8,26 @@
  *
  * key = characterName (match_players.characterName 과 조인), value = 역할 코드.
  */
+
+/**
+ * 캐릭터 역할 코드.
+ * - "tank": 탱커
+ * - "melee": 근접딜러
+ * - "ranged": 원거리딜러
+ * - "support": 서포터
+ */
 export type CharacterRole = "tank" | "melee" | "ranged" | "support";
+/**
+ * 역할 코드 + 미분류("etc"). 분류표에 없는 캐릭터를 표현할 때 사용.
+ */
 export type RoleOrEtc = CharacterRole | "etc";
 
+/**
+ * 캐릭터 이름 → 역할 코드 매핑표.
+ * 키는 캐릭터 이름(match_players.characterName 과 동일한 한글 표기),
+ * 값은 해당 캐릭터의 포지션 역할 코드(tank/melee/ranged/support)이다.
+ * 표에 없는 이름은 classifyRole 에서 "etc"(미분류)로 처리된다.
+ */
 export const ROLE_BY_NAME: Record<string, CharacterRole> = {
   로라스: "melee",
   휴톤: "tank",
@@ -99,6 +116,12 @@ export const ROLE_BY_NAME: Record<string, CharacterRole> = {
   오데트: "support",
 };
 
+/**
+ * 역할 코드 → 한글 표시 라벨 매핑.
+ * UI/통계 출력에서 코드를 사람이 읽을 수 있는 이름으로 변환할 때 사용한다.
+ * - tank → "탱커", melee → "근접딜러", ranged → "원거리딜러",
+ *   support → "서포터", etc → "미분류".
+ */
 export const ROLE_LABELS: Record<RoleOrEtc, string> = {
   tank: "탱커",
   melee: "근접딜러",
@@ -107,6 +130,11 @@ export const ROLE_LABELS: Record<RoleOrEtc, string> = {
   etc: "미분류",
 };
 
+/**
+ * 캐릭터 이름으로 역할 코드를 판별한다.
+ * @param characterName — 캐릭터 이름 (null/undefined 이거나 표에 없으면 "etc").
+ * @returns ROLE_BY_NAME 에 매핑된 역할 코드, 없으면 "etc"(미분류).
+ */
 export function classifyRole(characterName?: string | null): RoleOrEtc {
   if (!characterName) return "etc";
   return ROLE_BY_NAME[characterName] ?? "etc";
