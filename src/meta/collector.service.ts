@@ -20,6 +20,7 @@ import { DataSource, Repository } from "typeorm";
 import { Match, MatchPlayer, CollectionState, CollectionRun } from "../database/entities";
 import { NeopleService } from "../neople/neople.service";
 import { CollectionConfigService } from "./collection-config.service";
+import { CacheService } from "../neople/cache.service";
 import { parseMatchDetail } from "./match-parser";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -61,6 +62,7 @@ export class CollectorService {
     @InjectRepository(CollectionState) private readonly stateRepo: Repository<CollectionState>,
     @InjectRepository(CollectionRun) private readonly runRepo: Repository<CollectionRun>,
     private readonly config: CollectionConfigService,
+    private readonly cache: CacheService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -93,6 +95,16 @@ export class CollectorService {
   ) {
     if (this.running) return { status: "already_running" };
     this.running = true;
+
+    // 수집은 api_cache 의 최대 생산자(매치 상세마다 캐시 저장)라, 매 수집 시작 전에
+    // 만료 캐시를 정리해 테이블이 무한히 커지는 것을 막는다(무료 DB 512MB 초과 방지).
+    try {
+      const purged = await this.cache.purgeExpired();
+      if (purged > 0) this.logger.log(`만료 캐시 정리: ${purged}행`);
+    } catch (e) {
+      this.logger.warn(`캐시 정리 실패(무시): ${(e as Error).message}`);
+    }
+
     // Neople 랭킹 API 는 limit 최대 1000 지원 → 상위 N명(offset 시작)까지 수집 가능.
     const rankers = clamp(opts.rankers, 1, 1000, 20);
     const perPlayer = clamp(opts.perPlayer, 1, 30, 10);

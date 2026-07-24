@@ -54,6 +54,20 @@ export class CacheService {
     return row.expiresAt;
   }
 
+  /**
+   * 만료된 캐시 행을 일괄 삭제한다(테이블 무한 증가 방지). 삭제된 행 수 반환.
+   * get() 은 "조회된 키"의 만료 행만 지우므로, 다시 조회되지 않는 키(예: 매치 상세)의
+   * 만료 행이 영원히 쌓이는 것을 막기 위해 이 일괄 정리가 필요하다. expiresAt 인덱스를 탄다.
+   */
+  async purgeExpired(): Promise<number> {
+    const res = await this.repo
+      .createQueryBuilder()
+      .delete()
+      .where('"expiresAt" < now()')
+      .execute();
+    return res.affected ?? 0;
+  }
+
   async set(key: string, payload: unknown, ttlSeconds: number): Promise<void> {
     const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
     // 주의: 같은 캐시 키에 대한 동시 요청이 둘 다 캐시 미스로 INSERT 를 시도하면
@@ -65,5 +79,16 @@ export class CacheService {
       { cacheKey: key, payload: payload as object, expiresAt },
       ["cacheKey"],
     );
+
+    // 만료 캐시 확률적 정리 — 서버리스엔 상주 스케줄러가 없어, 쓰기 일부에서 상시 트리밍한다.
+    // (응답 후 백그라운드 작업은 잘릴 수 있어 await 로 완료 보장. 인덱스 삭제라 빠르고,
+    //  확률로 빈도를 낮춰 부하를 최소화한다. 정리 실패는 캐시 저장에 영향 주지 않게 무시.)
+    if (Math.random() < 0.03) {
+      try {
+        await this.purgeExpired();
+      } catch {
+        /* ignore */
+      }
+    }
   }
 }
