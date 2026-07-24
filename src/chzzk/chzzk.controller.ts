@@ -40,4 +40,20 @@ export class ChzzkController {
   liveUrl(@Query("channelId") channelId?: string) {
     return this.chzzk.getLiveUrl(channelId ?? "");
   }
+
+  /**
+   * 사이퍼즈 관련 치지직 동영상(VOD).
+   * HTTP: GET /api/chzzk/videos?sort=view|recent&limit=24
+   */
+  @Get("videos")
+  videos(@Query("sort") sort?: string, @Query("limit") limit?: string, @Query("offset") offset?: string) {
+    const s = sort === "recent" ? "recent" : "view";
+    const n = Number(limit);
+    const o = Number(offset);
+    return this.chzzk.getCyphersVideos(
+      s,
+      Number.isFinite(n) && n > 0 ? n : 24,
+      Number.isFinite(o) && o > 0 ? o : 0,
+    );
+  }
 }

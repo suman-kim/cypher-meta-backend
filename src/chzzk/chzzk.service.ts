@@ -28,6 +28,7 @@ const LIVES_CACHE_KEY = "chzzk:cyphers-lives";
 const LIVES_TTL = 60; // 라이브 목록 캐시(초)
 const EMPTY_TTL = 30; // 빈 결과 캐시(초) — 방송 시작을 빠르게 반영
 const LIVEURL_TTL = 20; // 라이브 재생주소(HLS) 캐시(초) — 호버 미리보기용
+const VIDEOS_TTL = 900; // 사이퍼즈 VOD 목록 캐시(초)
 
 /** 프론트엔드가 소비하는 표준 라이브 DTO(소스 API 차이를 흡수) */
 export interface ChzzkLive {
@@ -50,6 +51,21 @@ export interface ChzzkLivesResult {
   lives: ChzzkLive[];
   category: string | null;
   fetchedAt: string;
+}
+
+/** 치지직 사이퍼즈 동영상(VOD) DTO */
+export interface ChzzkVideo {
+  videoNo: number | string;
+  title: string;
+  thumbnailUrl: string | null;
+  viewCount: number;
+  publishedAt: string | null;
+  durationSec: number | null;
+  channelId: string;
+  channelName: string;
+  channelImageUrl: string | null;
+  verified: boolean;
+  url: string;
 }
 
 /** 응답 래퍼에서 data 배열/next 커서를 안전하게 추출(공식·비공식 모두 지원) */
@@ -323,6 +339,76 @@ export class ChzzkService {
     }
     const result = { channelId: id, url, debug };
     await this.cache.set(key, result, LIVEURL_TTL);
+    return result;
+  }
+
+  /** 비공식 search/videos 항목 → VOD DTO */
+  private fromVod(x: Record<string, unknown>): ChzzkVideo | null {
+    const videoNo = x.videoNo as number | string | undefined;
+    if (videoNo == null) return null;
+    const ch = (x.channel ?? {}) as Record<string, unknown>;
+    const pubMs =
+      typeof x.publishDateAt === "number"
+        ? x.publishDateAt
+        : Date.parse(String(x.publishDate ?? "").replace(" ", "T") + "+09:00");
+    return {
+      videoNo,
+      title: (x.videoTitle as string) ?? "",
+      thumbnailUrl: this.thumb(x.thumbnailImageUrl),
+      viewCount: Number(x.readCount ?? 0),
+      publishedAt: Number.isFinite(pubMs) ? new Date(pubMs).toISOString() : null,
+      durationSec: Number(x.duration) || null,
+      channelId: String((ch.channelId as string) ?? ""),
+      channelName: (ch.channelName as string) ?? "",
+      channelImageUrl: (ch.channelImageUrl as string) ?? null,
+      verified: Boolean(ch.verifiedMark),
+      url: `https://chzzk.naver.com/video/${videoNo}`,
+    };
+  }
+
+  /**
+   * 사이퍼즈 관련 치지직 동영상(VOD) 목록. sort: 'view'(조회순) | 'recent'(최신순).
+   * 비공식 search/videos 는 sortType 을 안 받으므로 받아온 배치를 서버에서 정렬한다.
+   */
+  async getCyphersVideos(
+    sort: "view" | "recent" = "view",
+    limit = 24,
+    offset = 0,
+  ): Promise<{ videos: ChzzkVideo[]; fetchedAt: string }> {
+    const size = Math.min(Math.max(Math.trunc(limit) || 24, 1), 40);
+    const off = Math.max(Math.trunc(offset) || 0, 0);
+    const cacheKey = `chzzk:cyphers-videos:${sort}:${off}:${size}`;
+    const cached = await this.cache.get<{ videos: ChzzkVideo[]; fetchedAt: string }>(cacheKey);
+    if (cached) return cached;
+
+    let videos: ChzzkVideo[] = [];
+    try {
+      const r = await this.svcGet(
+        `/v1/search/videos?keyword=${encodeURIComponent(GAME_NAME)}&offset=${off}&size=${size}`,
+      );
+      videos = pick(r)
+        .data.filter(
+          (x) =>
+            String(x.videoCategoryValue ?? "").includes(GAME_NAME) ||
+            String(x.videoTitle ?? "").includes(GAME_NAME),
+        )
+        .map((x) => this.fromVod(x))
+        .filter((x): x is ChzzkVideo => x !== null);
+    } catch (e) {
+      this.logger.warn(`치지직 동영상 조회 실패: ${(e as Error).message}`);
+    }
+
+    // 페이지 내 중복제거 + 정렬(조회/최신)
+    const seen = new Set<string>();
+    videos = videos
+      .filter((v) => (seen.has(String(v.videoNo)) ? false : (seen.add(String(v.videoNo)), true)))
+      .sort((a, b) =>
+        sort === "recent"
+          ? (Date.parse(b.publishedAt ?? "") || 0) - (Date.parse(a.publishedAt ?? "") || 0)
+          : b.viewCount - a.viewCount,
+      );
+    const result = { videos, fetchedAt: new Date().toISOString() };
+    await this.cache.set(cacheKey, result, VIDEOS_TTL);
     return result;
   }
 }
