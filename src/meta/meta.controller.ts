@@ -29,6 +29,16 @@ export class MetaController {
     return this.meta.characterItems(id);
   }
 
+  /** 특정 캐릭터를 픽한 표본 기록(누가·어떤 경기). */
+  @Get("characters/:id/picks")
+  picks(
+    @Param("id") id: string,
+    @Query("gameTypeId") gameTypeId?: string,
+    @Query("limit") limit?: string,
+  ) {
+    return this.meta.characterPicks(id, gameTypeId || undefined, limit ? Number(limit) : undefined);
+  }
+
   /** 5인(풀팀) 조합 집계 — 빈도/승률. 예: GET /api/meta/compositions?limit=6&minGames=3 */
   @Get("compositions")
   compositions(
@@ -41,6 +51,16 @@ export class MetaController {
       limit: limit ? Number(limit) : undefined,
       minGames: minGames ? Number(minGames) : undefined,
     });
+  }
+
+  /** 특정 조합이 등장한 표본 매치 목록 + 멤버. 예: GET /api/meta/compositions/matches?ids=a,b,c,d,e */
+  @Get("compositions/matches")
+  compMatches(
+    @Query("ids") ids?: string,
+    @Query("gameTypeId") gameTypeId?: string,
+    @Query("limit") limit?: string,
+  ) {
+    return this.meta.compositionMatches(ids ?? "", gameTypeId || undefined, limit ? Number(limit) : undefined);
   }
 
   /** 수집 트리거 (수동). 예: POST /api/meta/collect?rankers=20&perPlayer=10 */

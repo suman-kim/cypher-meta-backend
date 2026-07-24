@@ -1,4 +1,4 @@
-import { IsIn, IsInt, IsOptional, IsString, Length, Min } from "class-validator";
+import { IsBoolean, IsIn, IsInt, IsOptional, IsString, Length, Min } from "class-validator";
 import { Type } from "class-transformer";
 
 export const BOARD_TYPES: string[] = ["free", "guide", "humor", "video"];
@@ -83,4 +83,88 @@ export class PasswordDto {
   @IsString()
   @Length(1, 30)
   password: string;
+}
+
+
+/* ── 관리자(게시판/공지 관리) DTO ── */
+export class AdminListQuery {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  pageSize?: number;
+
+  @IsOptional()
+  @IsString()
+  q?: string;
+
+  @IsOptional()
+  @IsIn(BOARD_TYPES)
+  board?: string;
+
+  /** "true" 면 공지(isNotice=true)만 */
+  @IsOptional()
+  @IsString()
+  noticeOnly?: string;
+}
+
+export class AdminCreatePostDto {
+  @IsIn(BOARD_TYPES)
+  board: string;
+
+  @IsOptional()
+  @IsIn(CATEGORIES)
+  category?: string;
+
+  @IsString()
+  @Length(1, 120)
+  title: string;
+
+  @IsString()
+  @Length(1, 20000)
+  content: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isNotice?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @Length(1, 20)
+  authorName?: string;
+}
+
+export class AdminUpdatePostDto {
+  @IsOptional()
+  @IsIn(BOARD_TYPES)
+  board?: string;
+
+  @IsOptional()
+  @IsIn(CATEGORIES)
+  category?: string;
+
+  @IsOptional()
+  @IsString()
+  @Length(1, 120)
+  title?: string;
+
+  @IsOptional()
+  @IsString()
+  @Length(1, 20000)
+  content?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isNotice?: boolean;
+}
+
+export class AdminNoticeDto {
+  @IsBoolean()
+  isNotice: boolean;
 }

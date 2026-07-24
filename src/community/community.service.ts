@@ -8,7 +8,12 @@ import {
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { Comment, Post } from "../database/entities";
-import { CreateCommentDto, CreatePostDto } from "./dto";
+import {
+  AdminCreatePostDto,
+  AdminUpdatePostDto,
+  CreateCommentDto,
+  CreatePostDto,
+} from "./dto";
 import { hashPassword, verifyPassword } from "./password.util";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -180,6 +185,103 @@ export class CommunityService implements OnModuleInit {
     if (!verifyPassword(password, comment.guestPassword)) {
       throw new ForbiddenException("비밀번호가 일치하지 않습니다.");
     }
+    await this.comments.delete({ id });
+    await this.posts.decrement({ id: comment.postId }, "commentCount", 1);
+    return { ok: true };
+  }
+
+  /* ─────────────── 관리자(게시판/공지 관리) ─────────────── */
+
+  /** 전체 글 목록(공지 포함, 게시판/검색 필터). 공지 먼저, 그다음 최신순. */
+  async adminListPosts(
+    page = 1,
+    pageSize = 20,
+    q?: string,
+    board?: string,
+    noticeOnly = false,
+  ) {
+    const search = q?.trim();
+    const qb = this.posts.createQueryBuilder("p").where("1 = 1");
+    if (noticeOnly) qb.andWhere("p.isNotice = true");
+    if (board) qb.andWhere("p.boardType = :board", { board });
+    if (search) qb.andWhere("(p.title ILIKE :q OR p.content ILIKE :q)", { q: `%${search}%` });
+
+    const total = await qb.getCount();
+    const items = await qb
+      .clone()
+      .orderBy("p.isNotice", "DESC")
+      .addOrderBy("p.seq", "DESC")
+      .skip((page - 1) * pageSize)
+      .take(pageSize)
+      .getMany();
+
+    return { items, total, page, pageSize };
+  }
+
+  /** 공지/글 작성 (관리자 — 비밀번호 없음). 기본 isNotice=true. */
+  async adminCreatePost(dto: AdminCreatePostDto) {
+    const post = this.posts.create({
+      boardType: dto.board,
+      category: dto.category ?? "info",
+      isNotice: dto.isNotice ?? true,
+      title: dto.title.trim(),
+      content: dto.content,
+      authorId: null,
+      authorName: (dto.authorName ?? "관리자").trim(),
+      guestPassword: null,
+    });
+    const saved = await this.posts.save(post);
+    return { id: saved.id, seq: saved.seq };
+  }
+
+  /** 글/공지 수정 (관리자). update 로 지정 필드만 변경(비밀번호 컬럼 보존). */
+  async adminUpdatePost(id: string, dto: AdminUpdatePostDto) {
+    if (!UUID_RE.test(id)) throw new NotFoundException("게시글을 찾을 수 없습니다.");
+    const patch: Partial<Post> = {};
+    if (dto.board !== undefined) patch.boardType = dto.board;
+    if (dto.category !== undefined) patch.category = dto.category;
+    if (dto.title !== undefined) patch.title = dto.title.trim();
+    if (dto.content !== undefined) patch.content = dto.content;
+    if (dto.isNotice !== undefined) patch.isNotice = dto.isNotice;
+    if (Object.keys(patch).length === 0) return { ok: true };
+    const r = await this.posts.update({ id }, patch);
+    if (!r.affected) throw new NotFoundException("게시글을 찾을 수 없습니다.");
+    return { ok: true };
+  }
+
+  /** 글 삭제 (관리자 — 비밀번호 없이, 공지 포함). 댓글도 함께 삭제. */
+  async adminDeletePost(id: string) {
+    if (!UUID_RE.test(id)) throw new NotFoundException("게시글을 찾을 수 없습니다.");
+    const post = await this.posts.findOne({ where: { id } });
+    if (!post) throw new NotFoundException("게시글을 찾을 수 없습니다.");
+    await this.comments.delete({ postId: id });
+    await this.posts.delete({ id });
+    return { ok: true };
+  }
+
+  /** 공지 지정/해제 (관리자). */
+  async adminSetNotice(id: string, isNotice: boolean) {
+    if (!UUID_RE.test(id)) throw new NotFoundException("게시글을 찾을 수 없습니다.");
+    const r = await this.posts.update({ id }, { isNotice });
+    if (!r.affected) throw new NotFoundException("게시글을 찾을 수 없습니다.");
+    return { ok: true, isNotice };
+  }
+
+  /** 특정 글의 댓글 목록 (관리자). */
+  async adminListComments(postId: string) {
+    if (!UUID_RE.test(postId)) throw new NotFoundException("게시글을 찾을 수 없습니다.");
+    const rows = await this.comments.find({
+      where: { postId },
+      order: { createdAt: "ASC" },
+    });
+    return rows.map((c) => this.strip(c));
+  }
+
+  /** 댓글 삭제 (관리자 — 비밀번호 없이). */
+  async adminDeleteComment(id: string) {
+    if (!UUID_RE.test(id)) throw new NotFoundException("댓글을 찾을 수 없습니다.");
+    const comment = await this.comments.findOne({ where: { id } });
+    if (!comment) throw new NotFoundException("댓글을 찾을 수 없습니다.");
     await this.comments.delete({ id });
     await this.posts.decrement({ id: comment.postId }, "commentCount", 1);
     return { ok: true };

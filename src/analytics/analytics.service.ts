@@ -45,8 +45,19 @@ export class AnalyticsService {
     const days = Math.min(365, Math.max(1, Math.floor(daysInput) || 30));
     const w = `"createdAt" >= now() - interval '${days} days'`;
 
-    const [totalsRow, byDay, topPages, topSearches, topReferrers, byCountry, byDevice, byBrowser] =
-      await Promise.all([
+    const [
+      totalsRow,
+      byDay,
+      topPages,
+      topSearches,
+      topReferrers,
+      byCountry,
+      byDevice,
+      byBrowser,
+      byHour,
+      eventsRaw,
+      byOs,
+    ] = await Promise.all([
         this.repo.query(`
           SELECT
             (SELECT count(*) FROM visits WHERE ${w})::int AS views,
@@ -91,6 +102,23 @@ export class AnalyticsService {
           FROM visits WHERE ${w}
           GROUP BY 1 ORDER BY views DESC LIMIT 8
         `),
+        this.repo.query(`
+          SELECT extract(hour from ("createdAt" at time zone 'Asia/Seoul'))::int AS hour,
+                 count(*)::int AS views,
+                 count(distinct "visitorId")::int AS uniques
+          FROM visits WHERE ${w}
+          GROUP BY 1 ORDER BY 1
+        `),
+        this.repo.query(`
+          SELECT event, count(*)::int AS count
+          FROM visits WHERE ${w}
+          GROUP BY event ORDER BY count DESC
+        `),
+        this.repo.query(`
+          SELECT coalesce(nullif(os, ''), '기타') AS os, count(*)::int AS views
+          FROM visits WHERE ${w}
+          GROUP BY 1 ORDER BY views DESC LIMIT 8
+        `),
       ]);
 
     const totals = totalsRow[0] ?? { views: 0, visitors: 0, todayViews: 0, todayVisitors: 0 };
@@ -104,6 +132,9 @@ export class AnalyticsService {
       byCountry,
       byDevice,
       byBrowser,
+      byHour,
+      events: eventsRaw,
+      byOs,
     };
   }
 

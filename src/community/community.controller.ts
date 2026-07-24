@@ -1,6 +1,11 @@
-import { Body, Controller, Get, Param, Post, Query } from "@nestjs/common";
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from "@nestjs/common";
+import { AdminGuard } from "../analytics/admin.guard";
 import { CommunityService } from "./community.service";
 import {
+  AdminCreatePostDto,
+  AdminListQuery,
+  AdminNoticeDto,
+  AdminUpdatePostDto,
   CreateCommentDto,
   CreatePostDto,
   ListPostsQuery,
@@ -70,5 +75,62 @@ export class CommunityController {
   @Post("comments/:id/delete")
   removeComment(@Param("id") id: string, @Body() dto: PasswordDto) {
     return this.svc.deleteComment(id, dto.password);
+  }
+
+  /* ─────────────── 관리자 (AdminGuard: x-admin-token) ─────────────── */
+
+  /** 전체 글 목록(공지 포함) */
+  @UseGuards(AdminGuard)
+  @Get("admin/posts")
+  adminList(@Query() q: AdminListQuery) {
+    return this.svc.adminListPosts(
+      q.page ?? 1,
+      q.pageSize ?? 20,
+      q.q,
+      q.board,
+      q.noticeOnly === "true",
+    );
+  }
+
+  /** 공지/글 작성 */
+  @UseGuards(AdminGuard)
+  @Post("admin/posts")
+  adminCreate(@Body() dto: AdminCreatePostDto) {
+    return this.svc.adminCreatePost(dto);
+  }
+
+  /** 글/공지 수정 */
+  @UseGuards(AdminGuard)
+  @Post("admin/posts/:id/update")
+  adminUpdate(@Param("id") id: string, @Body() dto: AdminUpdatePostDto) {
+    return this.svc.adminUpdatePost(id, dto);
+  }
+
+  /** 글 삭제 (비밀번호 없이) */
+  @UseGuards(AdminGuard)
+  @Post("admin/posts/:id/delete")
+  adminDelete(@Param("id") id: string) {
+    return this.svc.adminDeletePost(id);
+  }
+
+  /** 공지 지정/해제 */
+  @UseGuards(AdminGuard)
+  @Post("admin/posts/:id/notice")
+  adminNotice(@Param("id") id: string, @Body() dto: AdminNoticeDto) {
+    return this.svc.adminSetNotice(id, dto.isNotice);
+  }
+
+  /** 특정 글의 댓글 목록 */
+  @UseGuards(AdminGuard)
+  @Get("admin/posts/:id/comments")
+  adminComments(@Param("id") id: string) {
+    return this.svc.adminListComments(id);
+  }
+
+  /** 댓글 삭제 (비밀번호 없이) */
+  @UseGuards(AdminGuard)
+  @Post("admin/comments/:id/delete")
+  adminDeleteComment(@Param("id") id: string) {
+    return this.svc.adminDeleteComment(id);
   }
 }

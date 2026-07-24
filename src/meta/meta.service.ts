@@ -248,4 +248,122 @@ export class MetaService {
       byWinRate,
     };
   }
+
+  /**
+   * 특정 캐릭터의 표본 픽 기록 — "누가(닉네임) 어떤 경기에서 픽했는지".
+   * match_players 에서 해당 캐릭터 행을 최신순으로 반환(+매치 메타).
+   */
+  async characterPicks(characterId: string, gameTypeId?: string, limitInput = 30) {
+    const limit = Math.min(Math.max(Math.floor(limitInput) || 30, 1), 100);
+    const params: any[] = [characterId];
+    let gt = "";
+    if (gameTypeId) {
+      gt = `AND mp."gameTypeId" = $2`;
+      params.push(gameTypeId);
+    }
+    params.push(limit);
+    const rows: any[] = await this.dataSource.query(
+      `
+      SELECT mp."matchId", mp."playerId", mp.nickname, mp.result,
+             mp."killCount", mp."deathCount", mp."assistCount",
+             m."playedAt", m."mapName"
+      FROM match_players mp
+      LEFT JOIN matches m ON m."matchId" = mp."matchId"
+      WHERE mp."characterId" = $1 ${gt}
+      ORDER BY m."playedAt" DESC NULLS LAST
+      LIMIT $${params.length}
+      `,
+      params,
+    );
+    const total = await this.mpRepo.count({
+      where: gameTypeId ? { characterId, gameTypeId } : { characterId },
+    });
+    return {
+      characterId,
+      total,
+      picks: rows.map((r) => ({
+        matchId: r.matchId,
+        playerId: r.playerId,
+        nickname: r.nickname,
+        result: r.result,
+        killCount: r.killCount,
+        deathCount: r.deathCount,
+        assistCount: r.assistCount,
+        playedAt: r.playedAt,
+        mapName: r.mapName,
+      })),
+    };
+  }
+
+  /**
+   * 특정 조합(캐릭터ID 집합)이 등장한 표본 매치 목록 + 그 팀 멤버.
+   * 같은 매치·같은 결과(win/lose)의 플레이어 캐릭터 집합이 요청 집합과 정확히 일치하는 팀만.
+   */
+  async compositionMatches(idsCsv: string, gameTypeId?: string, limitInput = 20) {
+    const gt = gameTypeId ?? "rating";
+    const ids = [...new Set(idsCsv.split(",").map((x) => x.trim()).filter(Boolean))];
+    if (ids.length < 2) return { ids, gameTypeId: gt, matches: [] };
+    const n = ids.length;
+    const limit = Math.min(Math.max(Math.floor(limitInput) || 20, 1), 50);
+
+    const teams: Array<{ matchId: string; result: string }> = await this.dataSource.query(
+      `
+      SELECT "matchId", result
+      FROM match_players
+      WHERE result IN ('win','lose') AND "characterName" IS NOT NULL AND "gameTypeId" = $1
+      GROUP BY "matchId", result
+      HAVING count(*) = $2
+         AND count(*) FILTER (WHERE "characterId" = ANY($3::text[])) = $2
+      LIMIT $4
+      `,
+      [gt, n, ids, limit],
+    );
+    if (teams.length === 0) return { ids, gameTypeId: gt, matches: [] };
+
+    const resultByMatch = new Map(teams.map((t) => [t.matchId, t.result]));
+    const matchIds = teams.map((t) => t.matchId);
+    const players: any[] = await this.dataSource.query(
+      `
+      SELECT mp."matchId", mp.result, mp."playerId", mp.nickname,
+             mp."characterId", mp."characterName",
+             mp."killCount", mp."deathCount", mp."assistCount",
+             m."playedAt", m."mapName"
+      FROM match_players mp
+      LEFT JOIN matches m ON m."matchId" = mp."matchId"
+      WHERE mp."matchId" = ANY($1::text[])
+      `,
+      [matchIds],
+    );
+
+    const byMatch = new Map<string, any>();
+    for (const p of players) {
+      if (resultByMatch.get(p.matchId) !== p.result) continue; // 이 조합의 팀만
+      let g = byMatch.get(p.matchId);
+      if (!g) {
+        g = {
+          matchId: p.matchId,
+          result: p.result,
+          playedAt: p.playedAt,
+          mapName: p.mapName,
+          players: [],
+        };
+        byMatch.set(p.matchId, g);
+      }
+      g.players.push({
+        playerId: p.playerId,
+        nickname: p.nickname,
+        characterId: p.characterId,
+        characterName: p.characterName,
+        killCount: p.killCount,
+        deathCount: p.deathCount,
+        assistCount: p.assistCount,
+      });
+    }
+    const matches = [...byMatch.values()].sort(
+      (a, b) =>
+        (b.playedAt ? new Date(b.playedAt).getTime() : 0) -
+        (a.playedAt ? new Date(a.playedAt).getTime() : 0),
+    );
+    return { ids, gameTypeId: gt, matches };
+  }
 }
