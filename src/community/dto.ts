@@ -6,7 +6,7 @@
  * 타입·범위·허용값을 검증하며, 일반 사용자용과 관리자용 DTO 를 함께 정의한다.
  * ------------------------------------------------------------------
  */
-import { IsBoolean, IsIn, IsInt, IsOptional, IsString, Length, Min } from "class-validator";
+import { IsBoolean, IsIn, IsInt, IsOptional, IsString, IsUUID, Length, Min } from "class-validator";
 import { Type } from "class-transformer";
 
 // 허용되는 게시판 타입 목록: 자유/공략/유머/영상.
@@ -120,6 +120,11 @@ export class CreateCommentDto {
   @IsString()
   @Length(1, 30)
   password: string;
+
+  // 부모 댓글 ID(대댓글). 없으면 최상위 댓글
+  @IsOptional()
+  @IsUUID()
+  parentId?: string;
 }
 
 /**

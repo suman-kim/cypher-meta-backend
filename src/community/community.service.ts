@@ -248,8 +248,16 @@ export class CommunityService implements OnModuleInit {
     if (!UUID_RE.test(postId)) throw new NotFoundException("게시글을 찾을 수 없습니다.");
     const post = await this.posts.findOne({ where: { id: postId } });
     if (!post) throw new NotFoundException("게시글을 찾을 수 없습니다.");
+    // 대댓글: 부모가 같은 글에 있어야 하며, 한 단계로 정규화(대댓글의 대댓글은 원 부모에 귀속)
+    let parentId: string | null = null;
+    if (dto.parentId) {
+      const parent = await this.comments.findOne({ where: { id: dto.parentId, postId } });
+      if (!parent) throw new NotFoundException("원 댓글을 찾을 수 없습니다.");
+      parentId = parent.parentId ?? parent.id;
+    }
     const comment = this.comments.create({
       postId,
+      parentId,
       authorName: dto.guestName.trim(),
       guestPassword: hashPassword(dto.password),
       content: dto.content,
@@ -276,8 +284,11 @@ export class CommunityService implements OnModuleInit {
     if (!verifyPassword(password, comment.guestPassword)) {
       throw new ForbiddenException("비밀번호가 일치하지 않습니다.");
     }
-    await this.comments.delete({ id });
-    await this.posts.decrement({ id: comment.postId }, "commentCount", 1);
+    // 원댓글 삭제 시 대댓글도 함께 삭제
+    const children = await this.comments.find({ where: { parentId: id } });
+    const ids = [id, ...children.map((c) => c.id)];
+    await this.comments.delete(ids);
+    await this.posts.decrement({ id: comment.postId }, "commentCount", ids.length);
     return { ok: true };
   }
 
@@ -415,8 +426,11 @@ export class CommunityService implements OnModuleInit {
     if (!UUID_RE.test(id)) throw new NotFoundException("댓글을 찾을 수 없습니다.");
     const comment = await this.comments.findOne({ where: { id } });
     if (!comment) throw new NotFoundException("댓글을 찾을 수 없습니다.");
-    await this.comments.delete({ id });
-    await this.posts.decrement({ id: comment.postId }, "commentCount", 1);
+    // 원댓글 삭제 시 대댓글도 함께 삭제
+    const children = await this.comments.find({ where: { parentId: id } });
+    const ids = [id, ...children.map((c) => c.id)];
+    await this.comments.delete(ids);
+    await this.posts.decrement({ id: comment.postId }, "commentCount", ids.length);
     return { ok: true };
   }
 }
