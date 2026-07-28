@@ -1,5 +1,6 @@
 /* Neople 매치 상세(raw) → matches / match_players 행으로 파싱 */
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { MatchStatSnapshot, resolveRole } from "./role-resolver";
 
 /**
  * 파싱된 개별 플레이어 행. match_players 테이블에 저장할 한 명의 정보.
@@ -25,6 +26,14 @@ export interface ParsedPlayer {
   assistCount: number;
   // 장착 아이템 원본 배열 (없으면 null)
   items: unknown;
+  // 게임 내 아이템 구매 순서 (itemId 배열, 없으면 null)
+  itemPurchase: unknown;
+  // 포지션 판별·분석용 경기 스탯 압축본 (없으면 null)
+  stats: unknown;
+  // 이 판에서의 판별 포지션 (tank/melee/ranged/support/etc)
+  role: string;
+  // 판별 근거 (static/stat/item)
+  roleSource: string;
 }
 /**
  * 파싱된 매치 전체. matches 행 1개와 그에 속한 match_players 행 배열로 구성.
@@ -74,17 +83,40 @@ export function parseMatchDetail(matchId: string, detail: any): ParsedMatch | nu
   const players: ParsedPlayer[] = (Array.isArray(detail.players) ? detail.players : [])
     .map((p: any): ParsedPlayer => {
       const info = p?.playInfo ?? p ?? {};
+      // 포지션 판별·분석용 경기 스탯 압축본(힐량·시야·딜량 등).
+      const stats: MatchStatSnapshot = {
+        attackPoint: Number(info.attackPoint ?? 0),
+        damagePoint: Number(info.damagePoint ?? 0),
+        battlePoint: Number(info.battlePoint ?? 0),
+        sightPoint: Number(info.sightPoint ?? 0),
+        towerAttackPoint: Number(info.towerAttackPoint ?? 0),
+        healAmount: Number(info.healAmount ?? 0),
+        backAttackCount: Number(info.backAttackCount ?? 0),
+        comboCount: Number(info.comboCount ?? 0),
+      };
+      // 게임 내 아이템 구매 순서(itemId 배열). 없으면 null.
+      const itemPurchase: string[] | null = Array.isArray(p?.itemPurchase)
+        ? p.itemPurchase.map((x: unknown) => String(x))
+        : null;
+      const characterName = info.characterName ?? null;
+      const equipped = Array.isArray(p?.items) ? p.items : null;
+      // 3단 판별: 1차 캐릭터 정적 → 2차 스탯 보정 → 3차 아이템 구매 순서 규칙.
+      const resolved = resolveRole(characterName, stats, itemPurchase, equipped);
       return {
         playerId: String(p?.playerId ?? ""),
         nickname: p?.nickname ?? null,
         characterId: String(info.characterId ?? ""),
-        characterName: info.characterName ?? null,
+        characterName,
         result: resultByPlayer.get(String(p?.playerId)) ?? info.result ?? "unknown",
         gameTypeId: detail.gameTypeId ?? null,
         killCount: Number(info.killCount ?? 0),
         deathCount: Number(info.deathCount ?? 0),
         assistCount: Number(info.assistCount ?? 0),
-        items: Array.isArray(p?.items) ? p.items : null,
+        items: equipped,
+        itemPurchase,
+        stats,
+        role: resolved.role,
+        roleSource: resolved.source,
       };
     })
     .filter((p) => p.playerId && p.characterId);

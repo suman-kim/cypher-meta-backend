@@ -26,6 +26,8 @@ import { CollectionConfigService } from "./collection-config.service";
 import { SchedulerService } from "./scheduler.service";
 import { MetaController } from "./meta.controller";
 import { PlayerHistoryService } from "./player-history.service";
+import { MatchSchemaService } from "./match-schema.service";
+import { NecklaceService } from "./necklace.service";
 import { PlayerHistoryController } from "./player-history.controller";
 
 /**
@@ -45,6 +47,6 @@ import { PlayerHistoryController } from "./player-history.controller";
     NeopleModule,
   ],
   controllers: [MetaController, PlayerHistoryController],
-  providers: [MetaService, CollectorService, SchedulerService, CollectionConfigService, PlayerHistoryService],
+  providers: [MetaService, CollectorService, SchedulerService, CollectionConfigService, PlayerHistoryService, MatchSchemaService, NecklaceService],
 })
 export class MetaModule {}

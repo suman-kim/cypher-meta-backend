@@ -116,6 +116,26 @@ export class MetaController {
   }
 
   /**
+   * 역할 기반 듀오 조합 집계 — 조합 티어 개편. 예: GET /api/meta/compositions/roles?limit=8
+   * @param gameTypeId — (쿼리) 게임 타입 필터. 빈 값이면 undefined.
+   * @param limit — (쿼리) 카테고리별 반환 조합 수.
+   * @param minGames — (쿼리) 승률순 최소 표본 경기 수.
+   * @returns MetaService.roleCompositions() 결과(카테고리별 빈도/승률 듀오 목록).
+   */
+  @Get("compositions/roles")
+  roleCompositions(
+    @Query("gameTypeId") gameTypeId?: string,
+    @Query("limit") limit?: string,
+    @Query("minGames") minGames?: string,
+  ) {
+    return this.meta.roleCompositions({
+      gameTypeId: gameTypeId || undefined,
+      limit: limit ? Number(limit) : undefined,
+      minGames: minGames ? Number(minGames) : undefined,
+    });
+  }
+
+  /**
    * 특정 조합이 등장한 표본 매치 목록 + 멤버. 예: GET /api/meta/compositions/matches?ids=a,b,c,d,e
    * @param ids — (쿼리) 쉼표로 구분된 캐릭터 ID 목록. 없으면 빈 문자열로 전달.
    * @param gameTypeId — (쿼리) 게임 타입 필터. 빈 값이면 undefined 로 전달.
@@ -157,6 +177,17 @@ export class MetaController {
       },
       { trigger: "manual", source: "api" },
     );
+  }
+
+  /**
+   * 기존 수집분 포지션(role) 소급 백필. POST /meta/roles/backfill (AdminGuard).
+   * 방목걸이 착용 행을 무조건 탱커/서포터로 보정하고, 남은 NULL 을 정적 분류로 채운다.
+   * 배포 후 1회 실행 권장(여러 번 실행해도 안전 — 멱등).
+   */
+  @Post("roles/backfill")
+  @UseGuards(AdminGuard)
+  backfillRoles() {
+    return this.collector.backfillRoles();
   }
 
   /**

@@ -22,6 +22,14 @@ import { NeopleService } from "../neople/neople.service";
 import { CollectionConfigService } from "./collection-config.service";
 import { CacheService } from "../neople/cache.service";
 import { parseMatchDetail } from "./match-parser";
+import { NecklaceService } from "./necklace.service";
+import { ROLE_BY_NAME, CharacterRole } from "./character-roles";
+import {
+  resolveRole,
+  findNeckItemId,
+  EquippedItemRef,
+  MatchStatSnapshot,
+} from "./role-resolver";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -63,6 +71,7 @@ export class CollectorService {
     @InjectRepository(CollectionRun) private readonly runRepo: Repository<CollectionRun>,
     private readonly config: CollectionConfigService,
     private readonly cache: CacheService,
+    private readonly necklace: NecklaceService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -171,12 +180,34 @@ export class CollectorService {
           const parsed = parseMatchDetail(matchId, detail);
           if (!parsed) continue;
 
+          // 목걸이(공/방) 기반 포지션 보정 — 3차 1순위 신호.
+          // 아이템 상세는 목걸이 "종류당" 1회만 조회(메모리+api_cache)라 추가 비용 미미.
+          for (const pl of parsed.players) {
+            try {
+              const neckId = findNeckItemId(pl.items as EquippedItemRef[] | null);
+              if (!neckId) continue;
+              const neck = await this.necklace.classify(neckId);
+              if (!neck) continue;
+              const r = resolveRole(
+                pl.characterName,
+                pl.stats as MatchStatSnapshot | null,
+                pl.itemPurchase as string[] | null,
+                pl.items as EquippedItemRef[] | null,
+                neck,
+              );
+              pl.role = r.role;
+              pl.roleSource = r.source;
+            } catch {
+              /* 보정 실패 시 파서의 기본 판별(정적/스탯) 유지 */
+            }
+          }
+
           await this.dataSource.transaction(async (mgr) => {
             await mgr.getRepository(Match).save(parsed.match);
             if (parsed.players.length) {
               await mgr
                 .getRepository(MatchPlayer)
-                .insert(parsed.players.map((p) => ({ ...p, matchId })) as unknown as MatchPlayer[]);
+                .insert(parsed.players.map((p) => ({ ...p, matchId })) as any);
             }
           });
           collected++;
@@ -249,6 +280,134 @@ export class CollectorService {
    * @param meta — 실행 트리거 메타(기본 auto/cron).
    * @returns collect 결과에 회전 메타(mode·collectedOffset·nextOffset·window·maxRank)를 덧붙인 객체.
    */
+  /**
+   * 기존 수집분(match_players)의 포지션(role) 소급 백필 — 관리자 1회성 작업.
+   *
+   * 목걸이 판별·3단 포지션은 "수집 시점"에 계산되므로, 기능 배포 전에 수집된 행은
+   * role 이 NULL 이라 집계가 캐릭터 정적 분류로 폴백한다. 다행히 구 행에도 최종
+   * 장착 아이템(items jsonb)은 저장돼 있어 목걸이를 소급 판별할 수 있다.
+   *
+   * 처리 내용:
+   *  1) 전 행의 목걸이(슬롯 107) itemId 를 distinct 추출 → NecklaceService 로 공/방 판별
+   *     (목걸이 "종류당" 1회 조회 — 수십 회 수준).
+   *  2) [불변식 강제] 방목걸이 착용 행은 무조건 탱커/서포터로 UPDATE:
+   *     힐량 스탯이 있으면(신규 행) 5000 이상 → 서포터. 아니면 캐릭터 원래 성격으로 —
+   *     서포터·원거리딜러 → 서포터(유틸형), 탱커·근접딜러·미분류 → 탱커(브루저형).
+   *  3) 남은 role NULL 행은 정적 분류로 채운다.
+   *
+   *  4) 공목걸이 착용 행도 소급한다 — 대칭 매핑이라 스탯 없이 가능:
+   *     탱커 → 근접딜러, 서포터 → 원거리딜러, 미분류 → 근접딜러.
+   *     (정적 분류가 이미 딜러면 그대로 유지)
+   */
+  async backfillRoles() {
+    // 1) 목걸이 종류 추출 + 판별
+    const neckRows: Array<{ id: string }> = await this.dataSource.query(`
+      SELECT DISTINCT it->>'itemId' AS id
+      FROM match_players mp
+      CROSS JOIN LATERAL jsonb_array_elements(mp.items) it
+      WHERE jsonb_typeof(mp.items) = 'array'
+        AND (it->>'slotCode' = '107' OR it->>'equipSlotCode' = '107')
+        AND it->>'itemId' IS NOT NULL
+    `);
+    const defIds: string[] = [];
+    const atkIds: string[] = [];
+    for (const r of neckRows) {
+      const t = await this.necklace.classify(String(r.id));
+      if (t === "def") defIds.push(String(r.id));
+      else if (t === "atk") atkIds.push(String(r.id));
+    }
+
+    // 정적 분류 이름 목록(역할별)
+    const namesOf = (role: CharacterRole): string[] =>
+      Object.entries(ROLE_BY_NAME)
+        .filter(([, r]) => r === role)
+        .map(([n]) => n);
+    const tankNames = namesOf("tank");
+    const supportNames = namesOf("support");
+    const meleeNames = namesOf("melee");
+    const rangedNames = namesOf("ranged");
+    const defLineNames = [...tankNames, ...supportNames];
+
+    // 2) 방목걸이 행 — 무조건 탱커/서포터 (불변식 소급 강제)
+    let defCorrected = 0;
+    if (defIds.length) {
+      const r = await this.dataSource.query(
+        `
+        UPDATE match_players mp
+           SET role = CASE
+                        WHEN (mp.stats->>'healAmount')::numeric >= 5000 THEN 'support'
+                        WHEN mp."characterName" = ANY($2::text[]) THEN 'support'
+                        ELSE 'tank'
+                      END,
+               "roleSource" = CASE WHEN mp."characterName" = ANY($3::text[]) THEN 'static' ELSE 'item' END
+         WHERE jsonb_typeof(mp.items) = 'array'
+           AND EXISTS (
+                 SELECT 1 FROM jsonb_array_elements(mp.items) it
+                  WHERE (it->>'slotCode' = '107' OR it->>'equipSlotCode' = '107')
+                    AND it->>'itemId' = ANY($1::text[])
+               )
+           AND (mp.role IS NULL OR mp.role NOT IN ('tank', 'support'))
+        `,
+        [defIds, [...supportNames, ...rangedNames], defLineNames],
+      );
+      defCorrected = Number(r?.[1] ?? 0) || 0;
+    }
+
+    // 3) 남은 NULL 행 — 정적 분류로 채움
+    // 4) 공목걸이 행 — 딜러 라인 소급 (탱커→근딜, 서포터→원딜, 미분류→근딜)
+    let atkCorrected = 0;
+    if (atkIds.length) {
+      const dealerNames = [...meleeNames, ...rangedNames];
+      const r3 = await this.dataSource.query(
+        `
+        UPDATE match_players mp
+           SET role = CASE
+                        WHEN mp."characterName" = ANY($2::text[]) THEN 'ranged'
+                        ELSE 'melee'
+                      END,
+               "roleSource" = CASE WHEN mp."characterName" = ANY($3::text[]) THEN 'static' ELSE 'item' END
+         WHERE jsonb_typeof(mp.items) = 'array'
+           AND EXISTS (
+                 SELECT 1 FROM jsonb_array_elements(mp.items) it
+                  WHERE (it->>'slotCode' = '107' OR it->>'equipSlotCode' = '107')
+                    AND it->>'itemId' = ANY($1::text[])
+               )
+           AND (mp.role IS NULL OR mp.role NOT IN ('melee', 'ranged'))
+        `,
+        [atkIds, [...supportNames, ...rangedNames], dealerNames],
+      );
+      atkCorrected = Number(r3?.[1] ?? 0) || 0;
+    }
+
+    const r2 = await this.dataSource.query(
+      `
+      UPDATE match_players mp
+         SET role = CASE
+                      WHEN mp."characterName" = ANY($1::text[]) THEN 'tank'
+                      WHEN mp."characterName" = ANY($2::text[]) THEN 'support'
+                      WHEN mp."characterName" = ANY($3::text[]) THEN 'melee'
+                      WHEN mp."characterName" = ANY($4::text[]) THEN 'ranged'
+                      ELSE 'etc'
+                    END,
+             "roleSource" = 'static'
+       WHERE mp.role IS NULL
+      `,
+      [tankNames, supportNames, meleeNames, rangedNames],
+    );
+    const staticFilled = Number(r2?.[1] ?? 0) || 0;
+
+    const result = {
+      distinctNecks: neckRows.length,
+      defNecks: defIds.length,
+      atkNecks: atkIds.length,
+      defCorrected,
+      atkCorrected,
+      staticFilled,
+    };
+    this.logger.log(`backfillRoles: ${JSON.stringify(result)}`);
+    return result;
+  }
+
   /**
    * 최근 수집 실행 이력을 최신순으로 조회한다(관리자 UI 용).
    * @param limit — 반환 개수(기본 30, 1~200 클램프).

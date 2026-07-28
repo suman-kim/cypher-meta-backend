@@ -278,6 +278,164 @@ export class MetaService {
    * @param opts.minGames — byWinRate 산정 시 최소 표본 경기 수(1 이상, 기본 3).
    * @returns 게임타입·풀팀 크기·총 팀 수·고유 조합 수와, 빈도순/승률순 조합 목록.
    */
+  /**
+   * 역할 기반 듀오/트리오 조합 집계 — "조합 티어" 개편의 핵심.
+   *
+   * 5인 풀팀은 정확 일치가 드물어 표본이 희박하지만(경우의 수 ~3천만),
+   * 팀 내 2인 조합은 한 팀에서 C(5,2)=10개, 3인 조합도 C(5,3)=10개씩 나와
+   * 표본 밀도가 수백 배라 통계적으로 의미 있는 승률이 나온다.
+   *
+   * 팀 = 같은 매치·같은 결과(win/lose) 그룹(기존 compositions 와 동일 규칙).
+   * 자기조인으로 팀 내 2인/3인 조합을 뽑고, 각 플레이어의 "그 판 포지션"
+   * (match_players.role — 목걸이/스탯/정적 3단 판별값. 구 데이터는 null →
+   * 캐릭터 정적 분류로 폴백)으로 카테고리를 나눠 집계한다:
+   *   dealerduo  딜러 듀오   — 2인 모두 근접/원거리 딜러
+   *   dealertrio 딜러 트리오 — 3인 모두 근접/원거리 딜러
+   *   tanktrio   탱커 트리오 — 탱커 3인, 또는 탱커 2인 + 서포터 1인
+   * 그 외 구성(미분류 etc 포함)은 제외한다.
+   *
+   * @param opts.gameTypeId — 게임 타입(기본 "rating").
+   * @param opts.limit — 카테고리별 반환 조합 수(1~30, 기본 8).
+   * @param opts.minGames — 승률순 산정 최소 표본(기본 3).
+   */
+  async roleCompositions(opts: { gameTypeId?: string; limit?: number; minGames?: number } = {}) {
+    const gameTypeId = opts.gameTypeId ?? "rating";
+    const limit = Math.min(Math.max(opts.limit ?? 8, 1), 30);
+    const minGames = Math.max(opts.minGames ?? 3, 1);
+
+    // 팀 내 2인 조합(이름 사전순 a<b 로 중복 제거). role null = 구 데이터 → TS 폴백.
+    const duoRows: Array<{
+      name_a: string; name_b: string; id_a: string; id_b: string;
+      role_a: string | null; role_b: string | null; games: number; wins: number;
+    }> = await this.dataSource.query(
+      `
+      SELECT a."characterName" AS name_a, b."characterName" AS name_b,
+             min(a."characterId") AS id_a, min(b."characterId") AS id_b,
+             a.role AS role_a, b.role AS role_b,
+             count(*)::int AS games,
+             count(*) FILTER (WHERE a.result = 'win')::int AS wins
+      FROM match_players a
+      JOIN match_players b
+        ON b."matchId" = a."matchId"
+       AND b.result = a.result
+       AND b."characterName" > a."characterName"
+      WHERE a.result IN ('win','lose')
+        AND a."characterName" IS NOT NULL AND b."characterName" IS NOT NULL
+        AND a."gameTypeId" = $1 AND b."gameTypeId" = $1
+      GROUP BY a."characterName", b."characterName", a.role, b.role
+      `,
+      [gameTypeId],
+    );
+
+    // 팀 내 3인 조합(이름 사전순 a<b<c).
+    const trioRows: Array<{
+      name_a: string; name_b: string; name_c: string;
+      id_a: string; id_b: string; id_c: string;
+      role_a: string | null; role_b: string | null; role_c: string | null;
+      games: number; wins: number;
+    }> = await this.dataSource.query(
+      `
+      SELECT a."characterName" AS name_a, b."characterName" AS name_b, c."characterName" AS name_c,
+             min(a."characterId") AS id_a, min(b."characterId") AS id_b, min(c."characterId") AS id_c,
+             a.role AS role_a, b.role AS role_b, c.role AS role_c,
+             count(*)::int AS games,
+             count(*) FILTER (WHERE a.result = 'win')::int AS wins
+      FROM match_players a
+      JOIN match_players b
+        ON b."matchId" = a."matchId"
+       AND b.result = a.result
+       AND b."characterName" > a."characterName"
+      JOIN match_players c
+        ON c."matchId" = a."matchId"
+       AND c.result = a.result
+       AND c."characterName" > b."characterName"
+      WHERE a.result IN ('win','lose')
+        AND a."characterName" IS NOT NULL AND b."characterName" IS NOT NULL AND c."characterName" IS NOT NULL
+        AND a."gameTypeId" = $1 AND b."gameTypeId" = $1 AND c."gameTypeId" = $1
+      GROUP BY a."characterName", b."characterName", c."characterName", a.role, b.role, c.role
+      `,
+      [gameTypeId],
+    );
+
+    const isDealer = (r: string): boolean => r === "melee" || r === "ranged";
+
+    interface ComboAgg { ids: string[]; names: string[]; roles: string[]; games: number; wins: number }
+    const byCat = new Map<string, Map<string, ComboAgg>>();
+    let totalCombos = 0;
+    const put = (cat: string, ids: string[], names: string[], roles: string[], games: number, wins: number): void => {
+      totalCombos += games;
+      const key = names.join("|") + "|" + roles.join("|");
+      let m = byCat.get(cat);
+      if (!m) byCat.set(cat, (m = new Map()));
+      let e = m.get(key);
+      if (!e) m.set(key, (e = { ids, names, roles, games: 0, wins: 0 }));
+      e.games += games;
+      e.wins += wins;
+    };
+
+    // 듀오: 2인 모두 딜러 → 딜러 듀오.
+    for (const r of duoRows) {
+      const ra = r.role_a ?? classifyRole(r.name_a);
+      const rb = r.role_b ?? classifyRole(r.name_b);
+      if (isDealer(ra) && isDealer(rb)) {
+        put("dealerduo", [r.id_a, r.id_b], [r.name_a, r.name_b], [ra, rb], r.games, r.wins);
+      }
+    }
+
+    // 트리오: 3인 모두 딜러 → 딜러 트리오 / 탱3 또는 탱2+폿1 → 탱커 트리오.
+    for (const r of trioRows) {
+      const roles = [
+        r.role_a ?? classifyRole(r.name_a),
+        r.role_b ?? classifyRole(r.name_b),
+        r.role_c ?? classifyRole(r.name_c),
+      ];
+      const ids = [r.id_a, r.id_b, r.id_c];
+      const names = [r.name_a, r.name_b, r.name_c];
+      if (roles.every(isDealer)) {
+        put("dealertrio", ids, names, roles, r.games, r.wins);
+        continue;
+      }
+      const tanks = roles.filter((x) => x === "tank").length;
+      const sups = roles.filter((x) => x === "support").length;
+      if (tanks === 3 || (tanks === 2 && sups === 1)) {
+        put("tanktrio", ids, names, roles, r.games, r.wins);
+      }
+    }
+
+    const CATS: Array<{ key: string; label: string }> = [
+      { key: "dealerduo", label: "딜러 듀오" },
+      { key: "dealertrio", label: "딜러 트리오" },
+      { key: "tanktrio", label: "탱커 트리오" },
+    ];
+    const categories = CATS.map((c) => {
+      const list = [...(byCat.get(c.key)?.values() ?? [])].map((e) => ({
+        ...e,
+        winRate: e.games ? Math.round((e.wins / e.games) * 1000) / 10 : 0,
+      }));
+      const byFrequency = [...list].sort((a, b) => b.games - a.games || b.winRate - a.winRate).slice(0, limit);
+      const byWinRate = list
+        .filter((x) => x.games >= minGames)
+        .sort((a, b) => b.winRate - a.winRate || b.games - a.games)
+        .slice(0, limit);
+      return { key: c.key, label: c.label, distinctCombos: list.length, byFrequency, byWinRate };
+    });
+
+    const mrow: any[] = await this.dataSource.query(
+      `SELECT count(distinct "matchId")::int AS m
+         FROM match_players
+        WHERE "gameTypeId" = $1 AND result IN ('win','lose')`,
+      [gameTypeId],
+    );
+
+    return {
+      gameTypeId,
+      minGames,
+      totalCombos,
+      sampledMatches: mrow[0]?.m ?? 0,
+      categories,
+    };
+  }
+
   async compositions(opts: { gameTypeId?: string; limit?: number; minGames?: number } = {}) {
     const gameTypeId = opts.gameTypeId ?? "rating";
     const limit = Math.min(Math.max(opts.limit ?? 6, 1), 30);
@@ -453,8 +611,7 @@ export class MetaService {
       FROM match_players
       WHERE result IN ('win','lose') AND "characterName" IS NOT NULL AND "gameTypeId" = $1
       GROUP BY "matchId", result
-      HAVING count(*) = $2
-         AND count(*) FILTER (WHERE "characterId" = ANY($3::text[])) = $2
+      HAVING count(*) FILTER (WHERE "characterId" = ANY($3::text[])) = $2
       LIMIT $4
       `,
       [gt, n, ids, limit],
