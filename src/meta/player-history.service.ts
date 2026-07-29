@@ -308,7 +308,7 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
     await this.ensureReady();
     const rows = await this.pmRepo.find({
       where: { playerId, gameTypeId: gameType },
-      select: ["matchId", "playedAt", "characterName", "result", "killCount", "deathCount", "assistCount", "playTime"],
+      select: ["matchId", "playedAt", "characterId", "characterName", "result", "killCount", "deathCount", "assistCount", "playTime"],
       order: { playedAt: "DESC" },
     });
 
@@ -320,7 +320,7 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
     let playTimeSum = 0;
     let playTimeCnt = 0;
 
-    const charMap = new Map<string, { games: number; wins: number; k: number; d: number; a: number }>();
+    const charMap = new Map<string, { characterId: string; games: number; wins: number; k: number; d: number; a: number }>();
     const roleMap = new Map<string, { games: number; wins: number }>();
     const yearMap = new Map<
       number,
@@ -342,7 +342,8 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
       dSum += r.deathCount;
       aSum += r.assistCount;
 
-      const c = charMap.get(name) ?? { games: 0, wins: 0, k: 0, d: 0, a: 0 };
+      const c = charMap.get(name) ?? { characterId: "", games: 0, wins: 0, k: 0, d: 0, a: 0 };
+      if (!c.characterId && r.characterId) c.characterId = String(r.characterId);
       c.games++;
       c.wins += win;
       c.k += r.killCount;
@@ -376,6 +377,7 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
     const topCharacters = [...charMap.entries()]
       .map(([name, s]) => ({
         name,
+        characterId: s.characterId,
         role: classifyRole(name),
         games: s.games,
         wins: s.wins,
