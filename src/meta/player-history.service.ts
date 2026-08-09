@@ -237,8 +237,16 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
       await this.ensureReady();
       // 첫 조회면 전체 백필(현 시즌 전체), 이미 백필됐으면 최근분만 갱신.
       const existing = await this.tpRepo.findOne({ where: { playerId } });
-      await this.track(playerId, nickname, "search");
       const full = !existing?.backfilled;
+      // 조회 폭주 방지: 백필 완료 + 최근 30분 내 갱신이면 Neople/DB 작업 없이 즉시 반환.
+      if (
+        !full &&
+        existing?.lastRefreshedAt &&
+        Date.now() - new Date(existing.lastRefreshedAt).getTime() < 30 * 60 * 1000
+      ) {
+        return { tracked: true, mode: "cached", ingested: 0 };
+      }
+      await this.track(playerId, nickname, "search");
       let ingested = 0;
       // 공식전(rating) + 일반전(normal) 둘 다 적립.
       for (const gt of ["rating", "normal"]) {

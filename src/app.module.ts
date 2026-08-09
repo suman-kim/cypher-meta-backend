@@ -38,15 +38,19 @@ import { UpdatesModule } from "./updates/updates.module";
         // Neon 등 서버리스 Postgres는 SSL 필요. URL이 있으면 기본 SSL on.
         const useSsl = c.get<string>("DB_SSL", url ? "true" : "false") !== "false";
         // 연결 방식(URL/개별 변수)이 공유하는 공통 옵션.
+        // DB 종류: 기본 postgres(로컬/Neon), DB_TYPE=cockroachdb 면 CockroachDB 드라이버 사용.
+        // 옵션 형태(url/host/ssl/entities/synchronize/extra)는 동일 — type 판별자만 다르다.
+        const dbType =
+          c.get<string>("DB_TYPE", "postgres") === "cockroachdb" ? "cockroachdb" : "postgres";
         const common = {
-          type: "postgres" as const, // DB 종류: PostgreSQL
+          type: dbType as "postgres" | "cockroachdb", // DB 종류(env로 전환)
           entities, // 등록할 엔티티 목록
           synchronize: c.get<string>("DB_SYNC", "false") === "true", // 스키마 자동 동기화 여부(기본 false)
-          ssl: useSsl ? { rejectUnauthorized: false } : false, // SSL 사용 시 인증서 검증 완화
-          // 서버리스 환경 커넥션 제한 — Neon 풀러(-pooler) 연결 문자열 권장.
+          ssl: useSsl ? { rejectUnauthorized: false } : false, // SSL(CRDB/Neon 모두 필요) — 검증 완화
+          // 서버리스 환경 커넥션 제한 — Neon 풀러(-pooler)/CRDB 연결 문자열 권장.
           extra: { max: Number(c.get("DB_POOL_MAX", "5")) || 5 }, // 커넥션 풀 최대 수(기본 5)
         };
-        if (url) return { ...common, url }; // DATABASE_URL 이 있으면 URL 방식으로 연결
+        if (url) return { ...common, url } as TypeOrmModuleOptions; // DATABASE_URL 있으면 URL 방식
         // URL 이 없을 때: 개별 접속 정보(주로 로컬 개발)로 연결.
         return {
           ...common,
@@ -55,7 +59,7 @@ import { UpdatesModule } from "./updates/updates.module";
           username: c.get<string>("DB_USERNAME", "postgres"), // DB 사용자(기본 postgres)
           password: c.get<string>("DB_PASSWORD", "postgres"), // DB 비밀번호(기본 postgres)
           database: c.get<string>("DB_NAME", "cyphers"), // DB 이름(기본 cyphers)
-        };
+        } as TypeOrmModuleOptions;
       },
     }),
     NeopleModule, // Neople API 프록시·캐시 기능
