@@ -18,9 +18,6 @@ import { AnalyticsModule } from "./analytics/analytics.module";
 import { VotesModule } from "./votes/votes.module";
 import { CostumesModule } from "./costumes/costumes.module";
 import { UpdatesModule } from "./updates/updates.module";
-import { APP_GUARD } from "@nestjs/core";
-import { ThrottlerModule } from "@nestjs/throttler";
-import { CfThrottlerGuard } from "./common/cf-throttler.guard";
 
 /** 전역 설정·DB 연결과 모든 기능 모듈을 묶는 애플리케이션 루트 모듈 */
 @Module({
@@ -67,8 +64,6 @@ import { CfThrottlerGuard } from "./common/cf-throttler.guard";
         } as TypeOrmModuleOptions;
       },
     }),
-    // 요청 속도 제한(rate limit): 같은 IP가 60초에 120회 초과 요청하면 429 반환.
-    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
     NeopleModule, // Neople API 프록시·캐시 기능
     ChzzkModule, // 치지직(CHZZK) '사이퍼즈' 라이브 조회 기능
     YoutubeModule, // 유튜브 '사이퍼즈' 라이브 조회 기능
@@ -80,9 +75,5 @@ import { CfThrottlerGuard } from "./common/cf-throttler.guard";
     UpdatesModule, // 업데이트 노트(패치노트) 기능
   ],
   controllers: [HealthController], // 루트/헬스체크 엔드포인트
-  providers: [
-    // 전역 rate limit 가드 — Cloudflare 뒤 실제 클라이언트 IP(cf-connecting-ip) 기준 IP별 제한
-    { provide: APP_GUARD, useClass: CfThrottlerGuard },
-  ],
 })
 export class AppModule {}
