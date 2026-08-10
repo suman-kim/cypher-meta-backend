@@ -9,6 +9,7 @@ import { NestFactory } from "@nestjs/core";
 import { ValidationPipe } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { AppModule } from "./app.module";
+import { NestExpressApplication } from "@nestjs/platform-express";
 
 /**
  * Nest 애플리케이션을 초기화하고 HTTP 서버를 시작한다.
@@ -20,7 +21,9 @@ import { AppModule } from "./app.module";
  * @returns 없음(서버 기동 완료 시 resolve)
  */
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  // Cloudflare/Railway 프록시 뒤 — X-Forwarded-* 신뢰(실제 클라이언트 IP 파악).
+  app.set("trust proxy", 1);
   const config = app.get(ConfigService);
 
   const origins = config.get<string>("CORS_ORIGIN");

@@ -18,6 +18,9 @@ import { AnalyticsModule } from "./analytics/analytics.module";
 import { VotesModule } from "./votes/votes.module";
 import { CostumesModule } from "./costumes/costumes.module";
 import { UpdatesModule } from "./updates/updates.module";
+import { APP_GUARD } from "@nestjs/core";
+import { ThrottlerModule } from "@nestjs/throttler";
+import { CfThrottlerGuard } from "./common/cf-throttler.guard";
 
 /** 전역 설정·DB 연결과 모든 기능 모듈을 묶는 애플리케이션 루트 모듈 */
 @Module({
@@ -49,6 +52,8 @@ import { UpdatesModule } from "./updates/updates.module";
           ssl: useSsl ? { rejectUnauthorized: false } : false, // SSL(CRDB/Neon 모두 필요) — 검증 완화
           // 서버리스 환경 커넥션 제한 — Neon 풀러(-pooler)/CRDB 연결 문자열 권장.
           extra: { max: Number(c.get("DB_POOL_MAX", "5")) || 5 }, // 커넥션 풀 최대 수(기본 5)
+          // 재시도 횟수(기본 10). 스키마 디버깅 시 DB_RETRY_ATTEMPTS=1 로 두면 첫 에러가 그대로 보인다.
+          retryAttempts: Number(c.get("DB_RETRY_ATTEMPTS", "10")) || 10,
         };
         if (url) return { ...common, url } as TypeOrmModuleOptions; // DATABASE_URL 있으면 URL 방식
         // URL 이 없을 때: 개별 접속 정보(주로 로컬 개발)로 연결.
@@ -62,6 +67,8 @@ import { UpdatesModule } from "./updates/updates.module";
         } as TypeOrmModuleOptions;
       },
     }),
+    // 요청 속도 제한(rate limit): 같은 IP가 60초에 120회 초과 요청하면 429 반환.
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
     NeopleModule, // Neople API 프록시·캐시 기능
     ChzzkModule, // 치지직(CHZZK) '사이퍼즈' 라이브 조회 기능
     YoutubeModule, // 유튜브 '사이퍼즈' 라이브 조회 기능
@@ -73,5 +80,9 @@ import { UpdatesModule } from "./updates/updates.module";
     UpdatesModule, // 업데이트 노트(패치노트) 기능
   ],
   controllers: [HealthController], // 루트/헬스체크 엔드포인트
+  providers: [
+    // 전역 rate limit 가드 — Cloudflare 뒤 실제 클라이언트 IP(cf-connecting-ip) 기준 IP별 제한
+    { provide: APP_GUARD, useClass: CfThrottlerGuard },
+  ],
 })
 export class AppModule {}
