@@ -437,9 +437,10 @@ export class CollectorService {
     if (result?.status === "already_running") return result;
 
     let next = offset + window;
-    if (next >= maxRank) next = 0;
-    await this.config.setCursor(next);
+    const lapCompleted = next >= maxRank;
+    if (lapCompleted) next = 0;
+    await this.config.setCursor(next, lapCompleted);
 
-    return { ...result, mode: "rotating", collectedOffset: offset, nextOffset: next, window, maxRank };
+    return { ...result, mode: "rotating", collectedOffset: offset, nextOffset: next, window, maxRank, lapCompleted };
   }
 }

@@ -5,20 +5,10 @@
  *
  * 라우트 프리픽스: /meta (전역 프리픽스 포함 시 예: /api/meta).
  * 통계 조회용 엔드포인트(summary/roster/characters/compositions/picks)는 MetaService 에,
- * 데이터 수집 트리거(collect/cron/collect)는 CollectorService 에 위임한다.
- * cron/collect 는 Vercel Cron 전용이며 CRON_SECRET 으로 보호된다.
+ * 데이터 수집 트리거(collect)는 CollectorService 에 위임한다.
+ * 자동 수집은 Railway 상주 프로세스의 SchedulerService(인메모리 타이머)가 담당한다.
  */
-import {
-  Body,
-  Controller,
-  Get,
-  Headers,
-  Param,
-  Post,
-  Query,
-  UnauthorizedException,
-  UseGuards,
-} from "@nestjs/common";
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from "@nestjs/common";
 import { MetaService } from "./meta.service";
 import { CollectorService } from "./collector.service";
 import { CollectionConfigService, CollectionConfigPatch } from "./collection-config.service";
@@ -242,35 +232,4 @@ export class MetaController {
     );
   }
 
-  /**
-   * Vercel Cron 전용 회전 수집 트리거 (GET). vercel.json crons 에서 호출.
-   * CRON_SECRET 이 설정되면 Vercel이 보내는 `Authorization: Bearer <secret>` 를 검증.
-   * 매 호출마다 상위 window명씩 구간을 이동하며 수집(커서는 DB에 저장), maxRank 도달 시 1위부터 다시.
-   *
-   * @param auth — (헤더) Authorization 값. CRON_SECRET 설정 시 `Bearer <secret>` 와 일치해야 함.
-   * @returns CollectorService.collectRotating() 결과(회전 수집 작업 결과).
-   * @throws UnauthorizedException — CRON_SECRET 이 설정되어 있으나 인증 헤더가 일치하지 않을 때.
-   */
-  @Get("cron/collect")
-  async cronCollect(@Headers("authorization") auth?: string) {
-    const secret = process.env.CRON_SECRET;
-    if (secret && auth !== `Bearer ${secret}`) {
-      throw new UnauthorizedException("invalid cron secret");
-    }
-    // 수집 파라미터는 env 가 아니라 DB(collection_config)에서 읽는다.
-    const cfg = await this.collectionConfig.getConfig();
-    if (!cfg.autoCollect) {
-      return { status: "disabled", reason: "autoCollect=false (collection_config)" };
-    }
-    if (cfg.mode === "rotating") {
-      return this.collector.collectRotating(
-        { window: cfg.cronWindow, perPlayer: cfg.perPlayer, gameTypeId: cfg.gameType, maxRank: cfg.maxRank },
-        { trigger: "auto", source: "cron" },
-      );
-    }
-    return this.collector.collect(
-      { rankers: cfg.rankers, perPlayer: cfg.perPlayer, gameTypeId: cfg.gameType, offset: 0, mode: "fixed" },
-      { trigger: "auto", source: "cron" },
-    );
-  }
 }

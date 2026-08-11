@@ -25,6 +25,7 @@ export interface CollectionConfigPatch {
   cronWindow?: number;
   maxRank?: number;
   cursorOffset?: number;
+  lapCount?: number;
 }
 
 const CONFIG_ID = "default";
@@ -76,6 +77,8 @@ export class CollectionConfigService implements OnApplicationBootstrap {
           this.logger.log(`테이블 생성: ${meta.tableName}`);
         }
       }
+      // DB_SYNC=false 인 운영계에서도 신규 컬럼을 보장 (match-schema.service.ts 와 동일 패턴).
+      await qr.query(`ALTER TABLE collection_config ADD COLUMN IF NOT EXISTS "lapCount" integer NOT NULL DEFAULT 0`);
     } finally {
       await qr.release();
     }
@@ -142,13 +145,22 @@ export class CollectionConfigService implements OnApplicationBootstrap {
     // maxRank 는 최소 window 이상이어야 회전이 성립한다.
     if (cfg.maxRank < cfg.cronWindow) cfg.maxRank = cfg.cronWindow;
     if (patch.cursorOffset != null) cfg.cursorOffset = clampInt(patch.cursorOffset, 0, 100000, cfg.cursorOffset);
+    if (patch.lapCount != null) cfg.lapCount = clampInt(patch.lapCount, 0, 1_000_000, cfg.lapCount);
 
     return this.repo.save(cfg);
   }
 
-  /** 회전 커서만 갱신(수집 완료 후 다음 시작 오프셋 저장). */
-  async setCursor(nextOffset: number): Promise<void> {
+  /**
+   * 회전 커서 갱신(수집 완료 후 다음 시작 오프셋 저장).
+   * @param nextOffset — 다음 사이클 시작 오프셋.
+   * @param lapCompleted — true 면 커서가 maxRank 를 넘어 1위로 되돌아온 것(순회 1회 완료) — lapCount 를 함께 1 증가시킨다.
+   */
+  async setCursor(nextOffset: number, lapCompleted = false): Promise<void> {
     await this.ensureReady();
-    await this.repo.update({ id: CONFIG_ID }, { cursorOffset: Math.max(0, Math.floor(nextOffset) || 0) });
+    const cursorOffset = Math.max(0, Math.floor(nextOffset) || 0);
+    if (lapCompleted) {
+      await this.repo.increment({ id: CONFIG_ID }, "lapCount", 1);
+    }
+    await this.repo.update({ id: CONFIG_ID }, { cursorOffset });
   }
 }

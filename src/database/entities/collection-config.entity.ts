@@ -48,6 +48,10 @@ export class CollectionConfig {
   @Column({ type: "int", default: 0, comment: "rotating 커서(다음 시작 오프셋, 0=1위)" })
   cursorOffset: number;
 
+  /** rotating 모드에서 커서가 maxRank 를 넘어 1위로 되돌아온(순회 완료) 누적 횟수. */
+  @Column({ type: "int", default: 0, comment: "완료한 순회(랩) 누적 횟수" })
+  lapCount: number;
+
   /** 설정 마지막 수정 시각. */
   @UpdateDateColumn({ type: "timestamptz", comment: "설정 마지막 수정 시각" })
   updatedAt: Date;
