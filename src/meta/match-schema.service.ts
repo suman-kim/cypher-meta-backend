@@ -1,7 +1,7 @@
 /**
  * match-schema.service.ts
  * ---------------------------------------------------------------------------
- * match_players 확장 컬럼(itemPurchase/stats/role/roleSource)의 스키마 가드.
+ * match_players 확장 컬럼(itemPurchase/stats/role/roleSource/ultimateType)의 스키마 가드.
  *
  * 운영계는 DB_SYNC(synchronize)=false 라서 엔티티에 컬럼을 추가해도 실제 테이블에는
  * 반영되지 않는다 — 그 상태로 배포하면 TypeORM SELECT/INSERT가 "column does not exist"
@@ -25,10 +25,13 @@ export class MatchSchemaService implements OnApplicationBootstrap {
       `ALTER TABLE match_players ADD COLUMN IF NOT EXISTS "stats" jsonb`,
       `ALTER TABLE match_players ADD COLUMN IF NOT EXISTS "role" varchar`,
       `ALTER TABLE match_players ADD COLUMN IF NOT EXISTS "roleSource" varchar`,
+      // 궁극기 판별 결과(1st/2nd/null) + 궁극기 단위 집계용 인덱스
+      `ALTER TABLE match_players ADD COLUMN IF NOT EXISTS "ultimateType" varchar`,
+      `CREATE INDEX IF NOT EXISTS "IDX_match_players_character_ultimate" ON match_players ("characterId", "ultimateType")`,
     ];
     try {
       for (const q of ddl) await this.dataSource.query(q);
-      this.logger.log("match_players 확장 컬럼 보장 완료(itemPurchase/stats/role/roleSource)");
+      this.logger.log("match_players 확장 컬럼 보장 완료(itemPurchase/stats/role/roleSource/ultimateType)");
     } catch (e) {
       // 실패해도 앱은 뜨게 두되 크게 로그 — 이 상태에서 수집이 돌면 insert 가 실패할 수 있다.
       this.logger.error(`match_players 컬럼 보장 실패: ${(e as Error).message}`);

@@ -7,9 +7,9 @@
  * 바탕으로 프론트엔드에 노출할 각종 메타 지표를 계산해 반환한다.
  *  - 전체 캐릭터 로스터(roster)
  *  - 수집 현황 요약(summary)
- *  - 캐릭터별 픽/승률/KDA 통계(characterStats)
+ *  - 캐릭터별 픽/승률/KDA 통계(characterStats) / 궁극기(1차·2차) 단위 통계(characterUltimateStats)
  *  - 캐릭터별 아이템 채용률(characterItems)
- *  - 팀 조합(풀팀) 빈도/승률 집계(compositions)
+ *  - 팀 조합(풀팀) 빈도/승률 집계(compositions) / 궁극기 단위 듀오·트리오(ultimateCompositions)
  *  - 특정 캐릭터 픽 표본(characterPicks)
  *  - 특정 조합 등장 매치 표본(compositionMatches)
  *
@@ -21,6 +21,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { DataSource, Repository } from "typeorm";
 import { Match, MatchPlayer, CollectionState, CollectionRun } from "../database/entities";
 import { classifyRole } from "./character-roles";
+import { OFFICIAL_ROLES } from "./position-system";
 import { CollectionConfigService } from "./collection-config.service";
 import { NeopleService } from "../neople/neople.service";
 
@@ -174,6 +175,72 @@ export class MetaService {
       characterId: r.characterId,
       characterName: r.characterName,
       role: classifyRole(r.characterName),
+      picks: r.picks,
+      matchCount: r.matchCount,
+      wins: r.wins,
+      pickRate: Math.round((r.matchCount / totalMatches) * 1000) / 10,
+      winRate: Math.round((r.wins / r.picks) * 1000) / 10,
+      kda: Math.round(((r.avgKill + r.avgAssist) / Math.max(r.avgDeath, 1)) * 100) / 100,
+      avgKill: r.avgKill,
+      avgDeath: r.avgDeath,
+      avgAssist: r.avgAssist,
+    }));
+  }
+
+  /**
+   * (캐릭터, 1차/2차 궁극기) 단위 픽/승률/KDA 통계 — 공식 역할군 체계의 캐릭터 티어 원천.
+   * match_players.ultimateType 이 판별된 행만 집계하고(판별 불가 null 제외),
+   * character_ultimates 와 조인해 궁극기 스킬명·공식 역할군을 붙인다.
+   * 픽률 분모는 characterStats 와 같은 "전체 매치 수"라 두 통계를 나란히 비교할 수 있다.
+   * @param gameTypeId — 게임 타입 필터(예: "rating"). 미지정 시 전체.
+   * @returns 행 목록(픽 수 내림차순) — 캐릭터 1명이 1차/2차 두 행으로 나올 수 있다.
+   */
+  async characterUltimateStats(gameTypeId?: string) {
+    const params: any[] = [];
+    let gameFilter = "";
+    if (gameTypeId) {
+      gameFilter = `AND mp."gameTypeId" = $1`;
+      params.push(gameTypeId);
+    }
+    const rows: any[] = await this.dataSource.query(
+      `
+      SELECT mp."characterId", mp."ultimateType",
+             max(mp."characterName") AS "characterName",
+             max(cu."skillName") AS "skillName",
+             max(cu."officialRole") AS "officialRole",
+             count(*)::int AS picks,
+             count(distinct mp."matchId")::int AS "matchCount",
+             sum(CASE WHEN mp.result = 'win' THEN 1 ELSE 0 END)::int AS wins,
+             round(avg(mp."killCount")::numeric, 2)::float AS "avgKill",
+             round(avg(mp."deathCount")::numeric, 2)::float AS "avgDeath",
+             round(avg(mp."assistCount")::numeric, 2)::float AS "avgAssist"
+      FROM match_players mp
+      JOIN character_ultimates cu
+        ON cu."characterId" = mp."characterId" AND cu."ultimateType" = mp."ultimateType"
+      WHERE mp."ultimateType" IS NOT NULL ${gameFilter}
+      GROUP BY mp."characterId", mp."ultimateType"
+      ORDER BY picks DESC
+      `,
+      params,
+    );
+    // 2차 궁극기 보유 여부(화면에서 "1차/2차" 배지를 붙일지 결정)
+    const dualRows: any[] = await this.dataSource.query(
+      `SELECT "characterId" FROM character_ultimates WHERE "ultimateType" = '2nd'`,
+    );
+    const dual = new Set(dualRows.map((r) => r.characterId));
+    const totalRow: any[] = await this.dataSource.query(
+      `SELECT count(distinct "matchId")::int AS t FROM match_players mp WHERE true ${gameFilter}`,
+      params,
+    );
+    const totalMatches = totalRow[0]?.t || 1;
+
+    return rows.map((r) => ({
+      characterId: r.characterId,
+      characterName: r.characterName,
+      ultimateType: r.ultimateType,
+      skillName: r.skillName,
+      officialRole: r.officialRole,
+      dual: dual.has(r.characterId),
       picks: r.picks,
       matchCount: r.matchCount,
       wins: r.wins,
@@ -433,6 +500,131 @@ export class MetaService {
       totalCombos,
       sampledMatches: mrow[0]?.m ?? 0,
       categories,
+    };
+  }
+
+  /**
+   * 궁극기 단위 듀오/트리오 조합 집계 — 공식 역할군 체계의 "조합 티어".
+   *
+   * 조합의 한 칸 = (캐릭터, 1차/2차 궁극기). 같은 캐릭터라도 궁극기가 다르면 다른 칸이다.
+   * 팀 = 같은 매치·같은 결과(win/lose) 그룹(roleCompositions 와 동일 규칙).
+   * 멤버 중 궁극기 판별 불가(ultimateType null)가 섞인 조합은 제외한다(전체의 약 0.5%).
+   * 고정 카테고리 대신, 조합의 공식 역할군 구성(예: 뱅가드+레인저)으로 거르는 필터를 제공한다.
+   *
+   * @param opts.gameTypeId — 게임 타입(기본 "rating").
+   * @param opts.size — 조합 인원 2|3(기본 2).
+   * @param opts.roles — 역할군 구성 필터(공식 역할군 영문 키 배열, 중복 허용). 조합이 이 구성을 포함해야 통과.
+   * @param opts.limit — 목록별 반환 조합 수(기본 10).
+   * @param opts.minGames — 승률순 최소 표본(기본 3).
+   * @returns { size, filterRoles, totalCombos, sampledMatches, roleMixes, byFrequency, byWinRate }
+   *   roleMixes: 필터 UI 용 — 역할군 구성별 조합 표본 수(많은 순).
+   */
+  async ultimateCompositions(
+    opts: { gameTypeId?: string; size?: number; roles?: string[]; limit?: number; minGames?: number } = {},
+  ) {
+    const gameTypeId = opts.gameTypeId ?? "rating";
+    const size = opts.size === 3 ? 3 : 2;
+    const limit = Math.min(Math.max(opts.limit ?? 10, 1), 50);
+    const minGames = Math.max(opts.minGames ?? 3, 1);
+
+    // 영문 키 → 한글 역할군명 (알 수 없는 키는 무시)
+    const keyToName = new Map<string, string>(OFFICIAL_ROLES.map((r) => [r.key, r.name]));
+    const filterRoles = (opts.roles ?? []).map((k) => keyToName.get(k)).filter((x): x is string => !!x);
+
+    // 칸 키 = characterId:ultimateType. 사전순 정렬(a<b<c)로 같은 조합 중복 제거.
+    const unit = (t: string) => `${t}."characterId" || ':' || ${t}."ultimateType"`;
+    const joins =
+      size === 2
+        ? `JOIN match_players b ON b."matchId" = a."matchId" AND b.result = a.result
+             AND b."ultimateType" IS NOT NULL AND ${unit("b")} > ${unit("a")} AND b."gameTypeId" = $1`
+        : `JOIN match_players b ON b."matchId" = a."matchId" AND b.result = a.result
+             AND b."ultimateType" IS NOT NULL AND ${unit("b")} > ${unit("a")} AND b."gameTypeId" = $1
+           JOIN match_players c ON c."matchId" = a."matchId" AND c.result = a.result
+             AND c."ultimateType" IS NOT NULL AND ${unit("c")} > ${unit("b")} AND c."gameTypeId" = $1`;
+    const cols = size === 2 ? ["a", "b"] : ["a", "b", "c"];
+    const rows: any[] = await this.dataSource.query(
+      `
+      SELECT ${cols.map((t) => `${unit(t)} AS u_${t}`).join(", ")},
+             count(*)::int AS games,
+             count(*) FILTER (WHERE a.result = 'win')::int AS wins
+      FROM match_players a
+      ${joins}
+      WHERE a.result IN ('win','lose') AND a."ultimateType" IS NOT NULL AND a."gameTypeId" = $1
+      GROUP BY ${cols.map((t) => `u_${t}`).join(", ")}
+      `,
+      [gameTypeId],
+    );
+
+    // 칸 → 캐릭터·궁극기·역할군 정보
+    const ults: any[] = await this.dataSource.query(
+      `SELECT "characterId", "ultimateType", "characterName", "skillName", "officialRole" FROM character_ultimates`,
+    );
+    const unitInfo = new Map<string, any>(ults.map((u) => [`${u.characterId}:${u.ultimateType}`, u]));
+    const dual = new Set(ults.filter((u) => u.ultimateType === "2nd").map((u) => u.characterId));
+
+    /** 역할군 목록이 필터 구성을 (중복 개수까지) 포함하는지 */
+    const containsRoles = (roles: string[]): boolean => {
+      const pool = [...roles];
+      for (const f of filterRoles) {
+        const i = pool.indexOf(f);
+        if (i < 0) return false;
+        pool.splice(i, 1);
+      }
+      return true;
+    };
+
+    let totalCombos = 0;
+    const mixCount = new Map<string, number>();
+    const list: Array<{
+      members: Array<{ characterId: string; characterName: string; ultimateType: string; skillName: string; officialRole: string; dual: boolean }>;
+      roles: string[];
+      games: number;
+      wins: number;
+      winRate: number;
+    }> = [];
+    for (const r of rows) {
+      const members = cols.map((t) => {
+        const u = unitInfo.get(r[`u_${t}`]);
+        return u
+          ? { characterId: u.characterId, characterName: u.characterName, ultimateType: u.ultimateType, skillName: u.skillName, officialRole: u.officialRole, dual: dual.has(u.characterId) }
+          : null;
+      });
+      if (members.some((m) => !m)) continue; // 기준 표에 없는 칸(신규 캐릭터 등)
+      const ms = members as NonNullable<(typeof members)[number]>[];
+      // 역할군 구성은 공식 표시 순서로 정렬해 "뱅가드+레인저" 같은 키로 만든다
+      const order = OFFICIAL_ROLES.map((x) => x.name as string);
+      const roles = ms.map((m) => m.officialRole).sort((x, y) => order.indexOf(x) - order.indexOf(y));
+      totalCombos += r.games;
+      const mixKey = roles.join("+");
+      mixCount.set(mixKey, (mixCount.get(mixKey) ?? 0) + r.games);
+      if (!containsRoles(roles)) continue;
+      list.push({ members: ms, roles, games: r.games, wins: r.wins, winRate: r.games ? Math.round((r.wins / r.games) * 1000) / 10 : 0 });
+    }
+
+    const byFrequency = [...list].sort((a, b) => b.games - a.games || b.winRate - a.winRate).slice(0, limit);
+    const byWinRate = list
+      .filter((x) => x.games >= minGames)
+      .sort((a, b) => b.winRate - a.winRate || b.games - a.games)
+      .slice(0, limit);
+    const roleMixes = [...mixCount.entries()]
+      .map(([mix, games]) => ({ roles: mix.split("+"), games }))
+      .sort((a, b) => b.games - a.games);
+
+    const mrow: any[] = await this.dataSource.query(
+      `SELECT count(distinct "matchId")::int AS m FROM match_players WHERE "gameTypeId" = $1 AND result IN ('win','lose')`,
+      [gameTypeId],
+    );
+    return {
+      gameTypeId,
+      size,
+      minGames,
+      filterRoles,
+      totalCombos,
+      sampledMatches: mrow[0]?.m ?? 0,
+      distinctCombos: list.length,
+      roleMixes,
+      byFrequency,
+      byWinRate,
     };
   }
 

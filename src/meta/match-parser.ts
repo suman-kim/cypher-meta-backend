@@ -34,6 +34,8 @@ export interface ParsedPlayer {
   role: string;
   // 판별 근거 (static/stat/item)
   roleSource: string;
+  // 이 판의 궁극기(1st/2nd). 파서는 null 로 두고, 수집기가 UltimateService.resolve 로 채운다
+  ultimateType: string | null;
 }
 /**
  * 파싱된 매치 전체. matches 행 1개와 그에 속한 match_players 행 배열로 구성.
@@ -117,6 +119,7 @@ export function parseMatchDetail(matchId: string, detail: any): ParsedMatch | nu
         stats,
         role: resolved.role,
         roleSource: resolved.source,
+        ultimateType: null,
       };
     })
     .filter((p) => p.playerId && p.characterId);

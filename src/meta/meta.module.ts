@@ -4,7 +4,7 @@
  * 메타 통계 도메인 NestJS 모듈.
  *
  * 메타 통계 조회(MetaService)·데이터 수집(CollectorService)·스케줄링(SchedulerService)과
- * 개인 히스토리 적립(PlayerHistoryService)을 하나로 묶고, 필요한 TypeORM 엔티티
+ * 개인 히스토리 적립(PlayerHistoryService)·1차/2차 궁극기 판별(UltimateService)을 하나로 묶고, 필요한 TypeORM 엔티티
  * 리포지토리와 외부 API 프록시(NeopleModule)를 임포트한다.
  * HTTP 진입점은 MetaController(통계/수집)와 PlayerHistoryController(개인 히스토리).
  */
@@ -18,6 +18,8 @@ import {
   CollectionRun,
   PlayerMatch,
   TrackedPlayer,
+  CharacterUltimate,
+  UltimateItem,
 } from "../database/entities";
 import { NeopleModule } from "../neople/neople.module";
 import { MetaService } from "./meta.service";
@@ -29,6 +31,9 @@ import { PlayerHistoryService } from "./player-history.service";
 import { MatchSchemaService } from "./match-schema.service";
 import { NecklaceService } from "./necklace.service";
 import { PlayerHistoryController } from "./player-history.controller";
+import { UltimateService } from "./ultimate.service";
+import { PositionSystemService } from "./position-system";
+import { PlayerUltimateService } from "./player-ultimate.service";
 
 /**
  * 메타 통계 기능(조회·수집·스케줄)과 개인 히스토리 적립을 구성하는 기능 모듈.
@@ -43,10 +48,12 @@ import { PlayerHistoryController } from "./player-history.controller";
       CollectionRun,
       PlayerMatch,
       TrackedPlayer,
+      CharacterUltimate,
+      UltimateItem,
     ]),
     NeopleModule,
   ],
   controllers: [MetaController, PlayerHistoryController],
-  providers: [MetaService, CollectorService, SchedulerService, CollectionConfigService, PlayerHistoryService, MatchSchemaService, NecklaceService],
+  providers: [MetaService, CollectorService, SchedulerService, CollectionConfigService, PlayerHistoryService, MatchSchemaService, NecklaceService, UltimateService, PositionSystemService, PlayerUltimateService],
 })
 export class MetaModule {}

@@ -22,6 +22,8 @@ import { UpdateNote } from "./update-note.entity";
 import { UpdateComment } from "./update-comment.entity";
 import { PlayerMatch } from "./player-match.entity";
 import { TrackedPlayer } from "./tracked-player.entity";
+import { CharacterUltimate } from "./character-ultimate.entity";
+import { UltimateItem } from "./ultimate-item.entity";
 
 /** TypeORM DataSource 에 등록할 전체 엔티티 목록 (app.module 의 entities 옵션에 사용) */
 export const entities = [
@@ -44,6 +46,8 @@ export const entities = [
   UpdateComment,
   PlayerMatch,
   TrackedPlayer,
+  CharacterUltimate,
+  UltimateItem,
 ];
 
 // 개별 엔티티도 이름으로 재-export (레포지토리 주입 등에서 직접 import 용도)
@@ -67,4 +71,8 @@ export {
   UpdateComment,
   PlayerMatch,
   TrackedPlayer,
+  CharacterUltimate,
+  UltimateItem,
 };
+
+export { ULTIMATE_TYPES, type UltimateType } from "./character-ultimate.entity";

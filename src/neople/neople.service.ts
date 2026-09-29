@@ -69,9 +69,11 @@ export class NeopleService {
    * 연결/파싱/업스트림 오류는 각각 HttpException(503/502/원본 상태)으로 변환한다.
    *
    * @param subPath — /api/cy 접두사를 제거한 하위 경로(쿼리스트링 포함, apikey 제외)
+   * @param opts.fresh — true 면 캐시를 건너뛰고 원본에서 새로 받는다(캐시는 갱신).
+   * @param opts.store — false 면 원본 응답을 캐시에 저장하지 않는다(대량 1회성 조회로 api_cache 가 불어나는 것 방지). 기본 true.
    * @returns Neople API 응답 본문(JSON). 캐시 히트 시 캐시된 값.
    */
-  async proxy(subPath: string, opts?: { fresh?: boolean }): Promise<unknown> {
+  async proxy(subPath: string, opts?: { fresh?: boolean; store?: boolean }): Promise<unknown> {
     const cacheKey = subPath;
     // fresh=true 면 캐시 조회를 건너뛰고 항상 원본에서 새로 받아온다(아래에서 캐시는 갱신).
     if (!opts?.fresh) {
@@ -104,7 +106,7 @@ export class NeopleService {
       throw new HttpException(body as Record<string, unknown>, res.status);
     }
 
-    await this.cache.set(cacheKey, body, ttlForPath(subPath.split("?")[0]));
+    if (opts?.store !== false) await this.cache.set(cacheKey, body, ttlForPath(subPath.split("?")[0]));
     return body;
   }
 

@@ -5,7 +5,8 @@
  * matches / match_players 테이블에 적재한다. 전체 흐름:
  *   1) 평점(레이팅) 랭킹 API 로 상위 랭커 playerId 목록을 가져오고,
  *   2) 각 플레이어의 최근 매치 목록을 조회한 뒤,
- *   3) 아직 저장하지 않은 매치의 상세를 받아 parseMatchDetail 로 파싱해 DB 트랜잭션으로 저장한다.
+ *   3) 아직 저장하지 않은 매치의 상세를 받아 parseMatchDetail 로 파싱하고,
+ *      포지션(role)·궁극기(ultimateType, UltimateService)를 판별해 DB 트랜잭션으로 저장한다.
  *
  * 두 가지 진입점을 제공한다.
  *   - collect(): 상위 N명을 한 번에 수집 (고정 모드 / 수동·스케줄러용).
@@ -22,6 +23,7 @@ import { NeopleService } from "../neople/neople.service";
 import { CollectionConfigService } from "./collection-config.service";
 import { CacheService } from "../neople/cache.service";
 import { parseMatchDetail } from "./match-parser";
+import { UltimateService } from "./ultimate.service";
 import { NecklaceService } from "./necklace.service";
 import { ROLE_BY_NAME, CharacterRole } from "./character-roles";
 import {
@@ -73,6 +75,7 @@ export class CollectorService {
     private readonly cache: CacheService,
     private readonly necklace: NecklaceService,
     private readonly dataSource: DataSource,
+    private readonly ultimates: UltimateService,
   ) {}
 
   /**
@@ -200,6 +203,15 @@ export class CollectorService {
             } catch {
               /* 보정 실패 시 파서의 기본 판별(정적/스탯) 유지 */
             }
+          }
+
+          // 1차/2차 궁극기 판별 — 처음 보는 아이템만 학습 후, 장착 아이템으로 판별.
+          // (role/roleSource 포지션 판별과 독립. 실패해도 ultimateType=null 로 저장하고 backfill 로 보정 가능)
+          try {
+            await this.ultimates.prepareItems(parsed.players);
+            for (const pl of parsed.players) pl.ultimateType = this.ultimates.resolve(pl.characterId, pl.items as any[]);
+          } catch (e) {
+            this.logger.warn(`궁극기 판별 실패(${matchId}): ${(e as Error).message}`);
           }
 
           await this.dataSource.transaction(async (mgr) => {

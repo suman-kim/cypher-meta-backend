@@ -16,6 +16,9 @@
  *  - syncOnView(): 프로필 조회 시 호출 — watchlist 등록 + 수집(첫 조회 전체 백필, 이후 최근분).
  *  - refreshWatchlist(): 수동 배치(관리자) — 신규 전체 백필/기존 최근분 갱신(물량 상한).
  *  - summary(): 적립된 데이터로 개인 분석 요약(연/포지션/주력캐릭 등) 산출.
+ *    기존 포지션(탱커/근딜/원딜/서포터, 캐릭터명 정적 분류) 결과는 그대로 두고(롤백 대비),
+ *    공식 역할군·1차/2차 결과를 official* 필드로 함께 낸다.
+ *    궁극기(ultimateType)는 PlayerUltimateService 가 매치 상세 아이템으로 뒤에서 채운다.
  */
 import { Injectable, Logger, OnApplicationBootstrap } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
@@ -23,6 +26,8 @@ import { DataSource, Repository, Table } from "typeorm";
 import { PlayerMatch, TrackedPlayer } from "../database/entities";
 import { NeopleService } from "../neople/neople.service";
 import { classifyRole } from "./character-roles";
+import { PlayerUltimateService } from "./player-ultimate.service";
+import { UltimateService } from "./ultimate.service";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -43,6 +48,8 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
     @InjectRepository(TrackedPlayer) private readonly tpRepo: Repository<TrackedPlayer>,
     private readonly neople: NeopleService,
     private readonly dataSource: DataSource,
+    private readonly playerUltimates: PlayerUltimateService,
+    private readonly ultimates: UltimateService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -59,7 +66,7 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
     return this.ready;
   }
 
-  /** player_matches / tracked_players 테이블을 엔티티 메타데이터로 idempotent 생성. */
+  /** player_matches / tracked_players 테이블을 엔티티 메타데이터로 idempotent 생성하고, 궁극기 판별 컬럼을 보장한다. */
   private async ensureTables(): Promise<void> {
     const qr = this.dataSource.createQueryRunner();
     try {
@@ -71,6 +78,12 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
           this.logger.log(`테이블 생성: ${meta.tableName}`);
         }
       }
+      // DB_SYNC=false 운영계에서도 궁극기 판별 컬럼 보장 + 미처리 행 조회용 부분 인덱스
+      await qr.query(`ALTER TABLE player_matches ADD COLUMN IF NOT EXISTS "ultimateType" varchar`);
+      await qr.query(`ALTER TABLE player_matches ADD COLUMN IF NOT EXISTS "ultimateCheckedAt" timestamptz`);
+      await qr.query(
+        `CREATE INDEX IF NOT EXISTS "IDX_player_matches_ult_pending" ON player_matches ("playerId") WHERE "ultimateCheckedAt" IS NULL`,
+      );
     } finally {
       await qr.release();
     }
@@ -253,6 +266,10 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
         ingested += full ? await this.ingestFull(playerId, gt) : await this.ingestRecent(playerId, gt);
       }
       await this.updateCoverage(playerId, full);
+      // 궁극기(1차/2차) 판별은 매치 상세 호출이 필요해 오래 걸리므로 기다리지 않고 뒤에서 처리
+      void this.playerUltimates
+        .resolveForPlayer(playerId)
+        .catch((e) => this.logger.warn(`궁극기 판별 실패(무시) ${playerId}: ${(e as Error).message}`));
       return { tracked: true, mode: full ? "full" : "recent", ingested };
     } catch (e) {
       this.logger.warn(`syncOnView 실패(무시) ${playerId}: ${(e as Error).message}`);
@@ -306,17 +323,30 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
 
     const result = { backfilled, backfillRows, refreshed, refreshRows, backfillLimit, refreshLimit };
     this.logger.log(`refreshWatchlist: ${JSON.stringify(result)}`);
+    // 새로 쌓인 경기의 궁극기 판별 — 매치 상세는 현재 시즌만 남으므로 적립 직후 뒤에서 바로 처리
+    void this.playerUltimates
+      .resolvePending()
+      .catch((e) => this.logger.warn(`궁극기 판별 배치 실패(무시): ${(e as Error).message}`));
     return result;
   }
 
   // ---------------------------------------------------------------- 분석/조회
 
-  /** 적립된 개인 매치로 요약(총합/승률/주력캐릭/포지션/연도별/최근폼) 산출. */
+  /**
+   * 적립된 개인 매치로 요약(총합/승률/주력캐릭/포지션/연도별/최근폼) 산출.
+   * 기존 포지션 필드(positions/primaryRole/byYear.topRole/topCharacters.role)는 그대로 유지하고,
+   * 공식 역할군 필드(officialPositions/primaryOfficialRole/byYear.topOfficialRole/topCharacters.ultimates)를 추가한다.
+   * officialRole=null 은 "미확정"(1차·2차 역할군이 다른 캐릭터인데 궁극기를 아직 모르는 판)이다.
+   * @param playerId — 대상 플레이어 ID
+   * @param gameType — "rating"(기본) | "normal"
+   * @returns 개인 분석 요약 객체
+   */
   async summary(playerId: string, gameType = "rating"): Promise<any> {
     await this.ensureReady();
+    await this.ultimates.ensureReady();
     const rows = await this.pmRepo.find({
       where: { playerId, gameTypeId: gameType },
-      select: ["matchId", "playedAt", "characterId", "characterName", "result", "killCount", "deathCount", "assistCount", "playTime"],
+      select: ["matchId", "playedAt", "characterId", "characterName", "result", "killCount", "deathCount", "assistCount", "playTime", "ultimateType", "ultimateCheckedAt"],
       order: { playedAt: "DESC" },
     });
 
@@ -330,9 +360,14 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
 
     const charMap = new Map<string, { characterId: string; games: number; wins: number; k: number; d: number; a: number }>();
     const roleMap = new Map<string, { games: number; wins: number }>();
+    // 공식 역할군 집계 — 키 null = 미확정
+    const officialMap = new Map<string | null, { games: number; wins: number }>();
+    // 캐릭터별 1차/2차/미상 판 수
+    const ultByChar = new Map<string, { first: number; second: number; unknown: number }>();
+    let ultChecked = 0;
     const yearMap = new Map<
       number,
-      { games: number; wins: number; chars: Map<string, number>; roles: Map<string, number> }
+      { games: number; wins: number; chars: Map<string, number>; roles: Map<string, number>; officialRoles: Map<string, number> }
     >();
     let kSum = 0;
     let dSum = 0;
@@ -364,13 +399,27 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
       rl.wins += win;
       roleMap.set(role, rl);
 
+      // 공식 역할군: 궁극기를 알면 그 역할군, 몰라도 역할군이 하나로 정해지면 그 역할군, 아니면 미확정(null)
+      const officialRole = this.ultimates.officialRoleOf(String(r.characterId), r.ultimateType);
+      const ol = officialMap.get(officialRole) ?? { games: 0, wins: 0 };
+      ol.games++;
+      ol.wins += win;
+      officialMap.set(officialRole, ol);
+      if (r.ultimateCheckedAt) ultChecked++;
+      const us = ultByChar.get(name) ?? { first: 0, second: 0, unknown: 0 };
+      if (r.ultimateType === "1st") us.first++;
+      else if (r.ultimateType === "2nd") us.second++;
+      else us.unknown++;
+      ultByChar.set(name, us);
+
       if (r.playedAt) {
         const y = new Date(r.playedAt).getFullYear();
-        const ye = yearMap.get(y) ?? { games: 0, wins: 0, chars: new Map(), roles: new Map() };
+        const ye = yearMap.get(y) ?? { games: 0, wins: 0, chars: new Map(), roles: new Map(), officialRoles: new Map() };
         ye.games++;
         ye.wins += win;
         ye.chars.set(name, (ye.chars.get(name) ?? 0) + 1);
         ye.roles.set(role, (ye.roles.get(role) ?? 0) + 1);
+        if (officialRole) ye.officialRoles.set(officialRole, (ye.officialRoles.get(officialRole) ?? 0) + 1);
         yearMap.set(y, ye);
       }
     }
@@ -391,6 +440,10 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
         wins: s.wins,
         winRate: s.games ? Math.round((s.wins / s.games) * 1000) / 10 : 0,
         kda: s.d ? Math.round(((s.k + s.a) / s.d) * 100) / 100 : s.k + s.a,
+        // 1차/2차/미상 판 수 (공식 역할군 체계용, 기존 필드와 별개)
+        ultimates: ultByChar.get(name) ?? { first: 0, second: 0, unknown: s.games },
+        // 이 캐릭터의 대표 공식 역할군 — 궁극기와 무관하게 정해지면 그 값, 아니면 더 많이 쓴 궁극기의 역할군
+        officialRole: this.charOfficialRole(s.characterId, ultByChar.get(name)),
       }))
       .sort((x, y) => y.games - x.games)
       .slice(0, 8);
@@ -412,7 +465,19 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
         winRate: s.games ? Math.round((s.wins / s.games) * 1000) / 10 : 0,
         topCharacter: topOf(s.chars),
         topRole: topOf(s.roles),
+        topOfficialRole: topOf(s.officialRoles), // 미확정 제외 최다 공식 역할군
       }));
+
+    // 공식 역할군 분포 — 미확정(null)은 목록 끝에 둔다
+    const officialPositions = [...officialMap.entries()]
+      .map(([officialRole, s]) => ({
+        officialRole,
+        games: s.games,
+        share: total ? Math.round((s.games / total) * 1000) / 10 : 0,
+        winRate: s.games ? Math.round((s.wins / s.games) * 1000) / 10 : 0,
+      }))
+      .sort((x, y) => (x.officialRole === null ? 1 : 0) - (y.officialRole === null ? 1 : 0) || y.games - x.games);
+    const primaryOfficialRole = officialPositions.find((p) => p.officialRole !== null)?.officialRole ?? null;
 
     const recentForm = rows
       .filter((r) => r.result === "win" || r.result === "lose")
@@ -427,6 +492,9 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
         total,
         oldest: rows[total - 1]?.playedAt ?? null,
         newest: rows[0]?.playedAt ?? null,
+        // 궁극기 판별을 마친 판 수 / 아직 백그라운드 처리 대기 중인 판 수
+        ultimateChecked: ultChecked,
+        ultimatePending: total - ultChecked,
       },
       winRate,
       wins,
@@ -436,10 +504,25 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
       avgPlayTime: playTimeCnt ? Math.round(playTimeSum / playTimeCnt) : 0,
       primaryRole,
       positions,
+      primaryOfficialRole,
+      officialPositions,
       topCharacters,
       byYear,
       recentForm,
     };
+  }
+
+  /**
+   * 캐릭터의 대표 공식 역할군(주력 캐릭터 표시용).
+   * @param characterId — 캐릭터 ID
+   * @param u — 이 플레이어의 그 캐릭터 1차/2차/미상 판 수
+   * @returns 역할군이 궁극기와 무관하게 정해지면 그 값, 아니면 판별된 판이 더 많은 궁극기의 역할군, 판별이 없으면 null
+   */
+  private charOfficialRole(characterId: string, u?: { first: number; second: number; unknown: number }): string | null {
+    const fixed = this.ultimates.officialRoleOf(characterId, null);
+    if (fixed) return fixed;
+    if (!u || u.first + u.second === 0) return null;
+    return this.ultimates.officialRoleOf(characterId, u.second > u.first ? "2nd" : "1st");
   }
 
   /** 적립된 원본 매치(최근순) 조회 — 디버그/검증용. */

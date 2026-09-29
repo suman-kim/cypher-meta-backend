@@ -10,6 +10,7 @@ import { Column, Entity, Index, PrimaryGeneratedColumn } from "typeorm";
 @Index(["matchId"])
 @Index(["characterId"])
 @Index(["playerId"])
+@Index("IDX_match_players_character_ultimate", ["characterId", "ultimateType"])
 export class MatchPlayer {
   /** 행 고유 ID (UUID 자동 생성, 기본키) */
   @PrimaryGeneratedColumn("uuid")
@@ -80,4 +81,13 @@ export class MatchPlayer {
   /** 포지션 판별 근거 (static=캐릭터 분류 / stat=스탯 보정 / item=아이템 규칙). */
   @Column({ type: "varchar", nullable: true, comment: "판별 근거(static/stat/item)" })
   roleSource: string | null;
+
+  /**
+   * 이 판에서 쓴 궁극기 ("1st"=1차 / "2nd"=2차 / null=판별 불가).
+   * Neople 이 직접 주지 않는 값 — 장착 아이템을 ultimate_items 와 대조해 판별(UltimateService).
+   * 공식 역할군은 저장하지 않고 character_ultimates(characterId, ultimateType)에서 조회한다.
+   * (role/roleSource 는 기존 포지션 체계 롤백 대비로 계속 수집한다)
+   */
+  @Column({ type: "varchar", nullable: true, comment: "이 판의 궁극기(1st/2nd, null=판별불가)" })
+  ultimateType: string | null;
 }

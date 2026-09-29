@@ -4,6 +4,10 @@
  * 조합 투표 기능에서 사용하는 5인 역할 편성 프리셋들을 정의한다. 각 프리셋은
  * 역할별 인원수(counts)와 슬롯 전개 순서(roles)를 가지며, 프론트엔드(lib/votes.ts)와
  * key 를 반드시 일치시켜야 서로 참조가 맞는다. FORMATION_MAP 으로 key 기반 빠른 조회를 제공한다.
+ *
+ * 두 체계를 함께 둔다(롤백 대비):
+ *  - FORMATIONS          : 기존 포지션(탱커/근딜/원딜/서포터) 프리셋 — legacy
+ *  - OFFICIAL_FORMATIONS : 공식 역할군 프리셋 — official (GET /votes/official/formations 로 노출)
  */
 /** 조합 투표용 역할 편성(5인) 프리셋. 프론트(lib/votes.ts)와 key 를 일치시킬 것. */
 
@@ -83,4 +87,40 @@ export const FORMATIONS: Formation[] = [
  */
 export const FORMATION_MAP: Record<string, Formation> = Object.fromEntries(
   FORMATIONS.map((f) => [f.key, f]),
+);
+
+/* ------------------------------------------------------------------ */
+/* 공식 역할군 편성 프리셋 (POSITION_SYSTEM=official)                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 공식 역할군 5인 편성 프리셋 1개.
+ * roles 는 공식 역할군 한글명(character_ultimates.officialRole)을 슬롯 순서대로 나열한다.
+ */
+export interface OfficialFormation {
+  // 프리셋 고유 키 — 역할군 머리글자 조합(V=뱅가드, S=스트라이커, K=스커미셔, R=리퍼, G=레인저, A=아틸러리, C=컨트롤러)
+  key: string;
+  // 사람이 읽는 라벨 (예: "뱅가드·스트라이커·리퍼·레인저·컨트롤러")
+  label: string;
+  // 슬롯별 공식 역할군(전방 → 후방 → 지원 순)
+  roles: string[];
+}
+
+/**
+ * 공식 편성 프리셋 목록.
+ * 실제 공식전 5인 팀의 역할군 구성 빈도 상위 6개로 정했다(2026-09-30, 로컬 표본 약 9천 팀).
+ * 표본이 쌓이면 빈도를 다시 보고 조정한다. 투표 payload 가 key 를 참조하므로 key 는 바꾸지 말 것.
+ */
+export const OFFICIAL_FORMATIONS: OfficialFormation[] = [
+  { key: "VSRGC", label: "뱅가드·스트라이커·리퍼·레인저·컨트롤러", roles: ["뱅가드", "스트라이커", "리퍼", "레인저", "컨트롤러"] },
+  { key: "VSKGC", label: "뱅가드·스트라이커·스커미셔·레인저·컨트롤러", roles: ["뱅가드", "스트라이커", "스커미셔", "레인저", "컨트롤러"] },
+  { key: "VVRGC", label: "뱅가드2·리퍼·레인저·컨트롤러", roles: ["뱅가드", "뱅가드", "리퍼", "레인저", "컨트롤러"] },
+  { key: "VVKGC", label: "뱅가드2·스커미셔·레인저·컨트롤러", roles: ["뱅가드", "뱅가드", "스커미셔", "레인저", "컨트롤러"] },
+  { key: "VVSKG", label: "뱅가드2·스트라이커·스커미셔·레인저", roles: ["뱅가드", "뱅가드", "스트라이커", "스커미셔", "레인저"] },
+  { key: "VVSRG", label: "뱅가드2·스트라이커·리퍼·레인저", roles: ["뱅가드", "뱅가드", "스트라이커", "리퍼", "레인저"] },
+];
+
+/** 공식 편성 key → 프리셋 조회 맵 */
+export const OFFICIAL_FORMATION_MAP: Record<string, OfficialFormation> = Object.fromEntries(
+  OFFICIAL_FORMATIONS.map((f) => [f.key, f]),
 );

@@ -7,6 +7,7 @@
  *  - GET  /meta/history/stats            적립 현황/용량(관리자)
  *  - POST /meta/history/run-now          수동 watchlist 갱신(관리자)
  *  - POST /meta/history/:playerId/backfill  특정 플레이어 전체 백필(관리자)
+ *  - POST /meta/history/ultimates/resolve   개인 히스토리 궁극기(1차/2차) 판별 배치(관리자)
  *  - GET  /meta/history/:playerId/matches   적립 원본 매치(공개, 디버그)
  *  - GET  /meta/history/:playerId        개인 분석 요약(공개)
  *
@@ -15,11 +16,19 @@
  */
 import { Body, Controller, Get, Param, Post, Query, UseGuards } from "@nestjs/common";
 import { PlayerHistoryService } from "./player-history.service";
+import { PlayerUltimateService } from "./player-ultimate.service";
 import { AdminGuard } from "../analytics/admin.guard";
 
 @Controller("meta")
 export class PlayerHistoryController {
-  constructor(private readonly history: PlayerHistoryService) {}
+  /**
+   * @param history — 개인 히스토리 적립/분석 서비스
+   * @param playerUltimates — 개인 히스토리 궁극기(1차/2차) 판별 서비스
+   */
+  constructor(
+    private readonly history: PlayerHistoryService,
+    private readonly playerUltimates: PlayerUltimateService,
+  ) {}
 
   /** 프로필 조회 훅(공개). body: { playerId, nickname? }. */
   @Post("history/track")
@@ -52,6 +61,19 @@ export class PlayerHistoryController {
   async backfill(@Param("playerId") playerId: string) {
     const ingested = await this.history.ingestFull(playerId, "rating");
     return { playerId, ingested };
+  }
+
+  /**
+   * 개인 히스토리 궁극기(1차/2차) 판별 배치(관리자) — 미처리 행을 물량 상한만큼 처리.
+   * 기존 적립분 백필용으로 remaining 이 0 이 될 때까지 여러 번 실행한다.
+   * @param limit — (쿼리) 이번 실행에서 매치 상세를 조회할 최대 경기 수(기본 2,000)
+   * @returns 처리 요약(이미 실행 중이면 { running: true })
+   */
+  @Post("history/ultimates/resolve")
+  @UseGuards(AdminGuard)
+  async resolveUltimates(@Query("limit") limit?: string) {
+    const r = await this.playerUltimates.resolvePending(limit ? Number(limit) : undefined);
+    return r ?? { running: true };
   }
 
   /** 적립된 원본 매치(공개, 디버그). */

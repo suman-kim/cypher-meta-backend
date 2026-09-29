@@ -5,7 +5,8 @@
  *
  * 라우트 프리픽스: /meta (전역 프리픽스 포함 시 예: /api/meta).
  * 통계 조회용 엔드포인트(summary/roster/characters/compositions/picks)는 MetaService 에,
- * 데이터 수집 트리거(collect)는 CollectorService 에 위임한다.
+ * 데이터 수집 트리거(collect)는 CollectorService 에,
+ * 1차/2차 궁극기 정의 조회·판별 관리(ultimates/*)는 UltimateService 에 위임한다.
  * 자동 수집은 Railway 상주 프로세스의 SchedulerService(인메모리 타이머)가 담당한다.
  */
 import { Body, Controller, Get, Param, Post, Query, UseGuards } from "@nestjs/common";
@@ -13,6 +14,9 @@ import { MetaService } from "./meta.service";
 import { CollectorService } from "./collector.service";
 import { CollectionConfigService, CollectionConfigPatch } from "./collection-config.service";
 import { AdminGuard } from "../analytics/admin.guard";
+import { UltimateService } from "./ultimate.service";
+import { PositionSystemService } from "./position-system";
+import { UltimateCompositionsQuery } from "./dto";
 
 /**
  * 메타 통계 및 수집 트리거를 노출하는 컨트롤러.
@@ -24,11 +28,16 @@ export class MetaController {
    * 의존성 주입 생성자.
    * @param meta — 메타 통계 계산 서비스(조회성 엔드포인트 위임 대상).
    * @param collector — 매치/플레이어 데이터 수집 서비스(수집 트리거 위임 대상).
+   * @param collectionConfig — 수집 설정(on/off·주기·랭커 수) 서비스.
+   * @param ultimates — 1차/2차 궁극기 판별 서비스(궁극기 정의 조회·아이템 재구축·backfill 위임 대상).
+   * @param positionSystem — 포지션 체계(official/legacy) 스위치.
    */
   constructor(
     private readonly meta: MetaService,
     private readonly collector: CollectorService,
     private readonly collectionConfig: CollectionConfigService,
+    private readonly ultimates: UltimateService,
+    private readonly positionSystem: PositionSystemService,
   ) {}
 
   /**
@@ -57,6 +66,26 @@ export class MetaController {
   @Get("characters")
   characters(@Query("gameTypeId") gameTypeId?: string) {
     return this.meta.characterStats(gameTypeId);
+  }
+
+  /**
+   * (캐릭터, 1차/2차 궁극기) 단위 통계 — 공식 역할군 캐릭터 티어용. GET /meta/characters/ultimates.
+   * @param gameTypeId — (쿼리) 게임 타입 필터.
+   * @returns MetaService.characterUltimateStats() 결과(궁극기 단위 행 배열).
+   */
+  @Get("characters/ultimates")
+  characterUltimates(@Query("gameTypeId") gameTypeId?: string) {
+    return this.meta.characterUltimateStats(gameTypeId || undefined);
+  }
+
+  /**
+   * 현재 포지션 체계(official/legacy)와 공식 역할군 목록. GET /meta/position-system.
+   * 프론트는 이 값으로 공식 역할군 화면/기존 포지션 화면을 고른다(롤백 스위치).
+   * @returns { system, officialRoles }
+   */
+  @Get("position-system")
+  getPositionSystem() {
+    return this.positionSystem.describe();
   }
 
   /**
@@ -102,6 +131,22 @@ export class MetaController {
       gameTypeId: gameTypeId || undefined,
       limit: limit ? Number(limit) : undefined,
       minGames: minGames ? Number(minGames) : undefined,
+    });
+  }
+
+  /**
+   * 궁극기 단위 듀오/트리오 조합 — 공식 역할군 조합 티어. 예: GET /api/meta/compositions/ultimates?size=2&roles=vanguard,ranger
+   * @param q — 조합 인원·역할군 구성 필터·반환 수·최소 표본 (UltimateCompositionsQuery)
+   * @returns MetaService.ultimateCompositions() 결과(빈도순/승률순 조합 + 역할군 구성 목록).
+   */
+  @Get("compositions/ultimates")
+  ultimateCompositions(@Query() q: UltimateCompositionsQuery) {
+    return this.meta.ultimateCompositions({
+      gameTypeId: q.gameTypeId || undefined,
+      size: q.size,
+      roles: q.roles ? q.roles.split(",").map((x) => x.trim()).filter(Boolean) : undefined,
+      limit: q.limit,
+      minGames: q.minGames,
     });
   }
 
@@ -232,4 +277,44 @@ export class MetaController {
     );
   }
 
+  /**
+   * 캐릭터별 1차/2차 궁극기 정의(스킬명·공식 역할군·검수 여부) 목록. GET /meta/ultimates.
+   * @returns character_ultimates 행 목록(캐릭터명·1st→2nd 순).
+   */
+  @Get("ultimates")
+  listUltimates() {
+    return this.ultimates.list();
+  }
+
+  /**
+   * 판별 기준 아이템 표(ultimate_items) 재구축. POST /meta/ultimates/rebuild-items (AdminGuard).
+   * match_players 에 등장한 레어 이상 아이템을 모두 다시 분류한다. 최초 도입·규칙 수정 후 1회 실행.
+   * @returns 대상 아이템 수·저장 수.
+   */
+  @Post("ultimates/rebuild-items")
+  @UseGuards(AdminGuard)
+  rebuildUltimateItems() {
+    return this.ultimates.rebuildItems();
+  }
+
+  /**
+   * 기존 match_players 의 ultimateType 일괄 채우기. POST /meta/ultimates/backfill (AdminGuard).
+   * rebuild-items 이후 실행. 여러 번 실행해도 안전(멱등).
+   * @returns 1차 단일·1차·2차·판별 불가 행 수.
+   */
+  @Post("ultimates/backfill")
+  @UseGuards(AdminGuard)
+  backfillUltimates() {
+    return this.ultimates.backfill();
+  }
+
+  /**
+   * DB 에서 직접 고친 궁극기 정의·아이템 표를 메모리 캐시에 다시 읽힌다. POST /meta/ultimates/reload (AdminGuard).
+   * @returns 적재된 캐릭터 수·아이템 수.
+   */
+  @Post("ultimates/reload")
+  @UseGuards(AdminGuard)
+  reloadUltimates() {
+    return this.ultimates.loadRules();
+  }
 }

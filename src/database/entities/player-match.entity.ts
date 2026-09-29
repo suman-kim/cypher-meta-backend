@@ -69,6 +69,17 @@ export class PlayerMatch {
   @Column({ type: "jsonb", nullable: true, comment: "성향 분석용 압축 스탯(JSON)" })
   stats: unknown;
 
+  /**
+   * 이 판에서 쓴 궁극기 ("1st"/"2nd"/null). 매치 목록 API 에는 아이템이 없어
+   * PlayerUltimateService 가 뒤에서 채운다(1차만 있는 캐릭터=1st / match_players 복사 / 매치 상세 아이템 판별).
+   */
+  @Column({ type: "varchar", nullable: true, comment: "이 판의 궁극기(1st/2nd, null=판별불가·미처리)" })
+  ultimateType: string | null;
+
+  /** 궁극기 판별을 시도한 시각. null = 아직 미처리(백그라운드 대상) */
+  @Column({ type: "timestamptz", nullable: true, comment: "궁극기 판별 시도 시각(null=미처리)" })
+  ultimateCheckedAt: Date | null;
+
   /** 우리 DB에 적립된 시각 */
   @CreateDateColumn({ type: "timestamptz", comment: "적립 시각" })
   collectedAt: Date;
