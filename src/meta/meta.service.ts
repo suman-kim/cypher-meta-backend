@@ -16,7 +16,7 @@
  * 대부분의 집계는 TypeORM Repository 대신 DataSource 를 통한 원시 SQL 로 수행한다.
  * 외부 캐릭터 목록은 NeopleService(네오플 오픈 API 프록시)에서 가져온다.
  */
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger, OnApplicationBootstrap } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { DataSource, Repository } from "typeorm";
 import { Match, MatchPlayer, CollectionState, CollectionRun } from "../database/entities";
@@ -32,9 +32,10 @@ import { NeopleService } from "../neople/neople.service";
  * 매치/플레이어 데이터를 조회·집계해 메타 관련 API 응답 데이터를 생성한다.
  */
 @Injectable()
-export class MetaService {
-  /** 궁극기 단위 조합 집계 캐시(게임 타입:인원 → 계산 시각·결과) — ultimateComboCounts 참고 */
-  private readonly comboCache = new Map<string, { at: number; data: { combos: Array<Record<string, any>>; sampledMatches: number } }>();
+export class MetaService implements OnApplicationBootstrap {
+  private readonly logger = new Logger(MetaService.name);
+  /** 무거운 조합 집계 결과 캐시(키 → 계산 시각·결과·진행 중 계산) — cached() 참고 */
+  private readonly aggCache = new Map<string, { at: number; data?: unknown; pending?: Promise<unknown> }>();
   /**
    * 의존성 주입 생성자.
    * @param dataSource — TypeORM DataSource. 원시 SQL 집계 쿼리 실행에 사용한다.
@@ -52,6 +53,57 @@ export class MetaService {
     private readonly collectionConfig: CollectionConfigService,
     private readonly neople: NeopleService,
   ) {}
+
+  /**
+   * 서버 기동 직후 조합 티어 집계 캐시를 미리 채운다(배포 직후 첫 방문자가 수 초~수십 초 기다리지 않게).
+   * 기동을 막지 않도록 뒤에서 순서대로 실행하며, 장기 프로세스가 없는 서버리스(Vercel)에서는 건너뛴다.
+   */
+  onApplicationBootstrap() {
+    if (process.env.VERCEL) return;
+    setTimeout(async () => {
+      const started = Date.now();
+      try {
+        await this.ultimateComboCounts("rating", 2);
+        await this.ultimateComboCounts("rating", 3);
+        await this.compositions({ gameTypeId: "rating" });
+        this.logger.log(`조합 집계 캐시 준비 완료 (${Date.now() - started}ms)`);
+      } catch (e) {
+        this.logger.warn(`조합 집계 캐시 준비 실패: ${(e as Error).message}`);
+      }
+    }, 5000);
+  }
+
+  /**
+   * 무거운 집계용 메모리 캐시(stale-while-revalidate).
+   *  - 캐시가 신선하면(ttl 이내) 그대로 반환
+   *  - 만료됐지만 이전 값이 있으면 이전 값을 바로 반환하고, 뒤에서 한 번만 다시 계산
+   *  - 값이 없으면(서버 기동 직후) 계산을 기다린다 — 동시에 여러 요청이 와도 계산은 1번
+   * 조합 집계는 수집 주기(수십 분)보다 자주 바뀔 필요가 없어, 사용자는 느린 계산을 기다리지 않게 된다.
+   * @param key — 캐시 키
+   * @param compute — 실제 계산 함수
+   * @param ttlMs — 신선 유지 시간(기본 10분)
+   * @returns 계산 결과(캐시 또는 새 값)
+   */
+  private async cached<T>(key: string, compute: () => Promise<T>, ttlMs = 10 * 60 * 1000): Promise<T> {
+    const entry = this.aggCache.get(key) ?? { at: 0 };
+    this.aggCache.set(key, entry);
+    const refresh = () => {
+      if (!entry.pending)
+        entry.pending = compute()
+          .then((data) => {
+            entry.data = data;
+            entry.at = Date.now();
+            return data;
+          })
+          .finally(() => (entry.pending = undefined));
+      return entry.pending as Promise<T>;
+    };
+    if (entry.data !== undefined) {
+      if (Date.now() - entry.at >= ttlMs) refresh().catch(() => undefined); // 뒤에서 갱신(실패 시 이전 값 유지)
+      return entry.data as T;
+    }
+    return refresh();
+  }
 
   /**
    * 전체 캐릭터 로스터 (역할 포함) — 투표 캐릭터 선택 UI 용.
@@ -617,7 +669,7 @@ export class MetaService {
   }
 
   /**
-   * 궁극기 단위 2인·3인 조합의 판수·승수 집계(ultimateCompositions 의 원천) — 10분 메모리 캐시.
+   * 궁극기 단위 2인·3인 조합의 판수·승수 집계(ultimateCompositions 의 원천) — 10분 메모리 캐시(cached).
    *
    * 예전에는 match_players 자기 조인(2~3중)으로 DB 에서 셌는데, 운영 표본(약 20만 행)에서 100초 이상 걸렸다.
    * 그래서 필요한 열만 한 번에 읽고(매치·결과·캐릭터·궁극기), 팀(같은 매치·같은 결과)별로
@@ -630,10 +682,19 @@ export class MetaService {
     gameTypeId: string,
     size: 2 | 3,
   ): Promise<{ combos: Array<Record<string, any>>; sampledMatches: number }> {
-    const key = `${gameTypeId}:${size}`;
-    const hit = this.comboCache.get(key);
-    if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.data;
+    return this.cached(`ultCombo:${gameTypeId}:${size}`, () => this.computeUltimateComboCounts(gameTypeId, size));
+  }
 
+  /**
+   * ultimateComboCounts 의 실제 계산(캐시 없이).
+   * @param gameTypeId — 게임 타입
+   * @param size — 조합 인원 2|3
+   * @returns combos·sampledMatches
+   */
+  private async computeUltimateComboCounts(
+    gameTypeId: string,
+    size: 2 | 3,
+  ): Promise<{ combos: Array<Record<string, any>>; sampledMatches: number }> {
     const rows: Array<{ matchId: string; result: string; characterId: string; ultimateType: string }> =
       await this.dataSource.query(
         `SELECT "matchId", result, "characterId", "ultimateType"
@@ -674,16 +735,63 @@ export class MetaService {
       cols.forEach((col, i) => (row[`u_${col}`] = parts[i]));
       return row;
     });
-    const data = { combos, sampledMatches: matches.size };
-    this.comboCache.set(key, { at: Date.now(), data });
-    return data;
+    return { combos, sampledMatches: matches.size };
   }
 
+  /**
+   * 5인 풀팀 조합 통계(레거시 데이터 조합 탭).
+   * 무거운 팀 복원·집계는 게임 타입별로 캐시(cached)하고, 요청마다 정렬·자르기만 한다.
+   * @param opts.gameTypeId — 게임 타입(기본 rating)
+   * @param opts.limit — 목록별 반환 수(1~30, 기본 6)
+   * @param opts.minGames — 승률순 최소 표본(기본 3)
+   * @returns 조합 빈도순·승률순 목록과 표본 요약
+   */
   async compositions(opts: { gameTypeId?: string; limit?: number; minGames?: number } = {}) {
     const gameTypeId = opts.gameTypeId ?? "rating";
     const limit = Math.min(Math.max(opts.limit ?? 6, 1), 30);
     const minGames = Math.max(opts.minGames ?? 3, 1);
+    const { teamSize, fullTeams, combos, repeatedCombos, maxGames, sampledMatches } = await this.cached(
+      `comp5:${gameTypeId}`,
+      () => this.computeCompositionBase(gameTypeId),
+    );
 
+    const all = combos.map((c) => ({
+      ids: c.ids,
+      names: c.names,
+      games: c.games,
+      wins: c.wins,
+      winRate: c.games ? Math.round((c.wins / c.games) * 1000) / 10 : 0,
+    }));
+
+    const byFrequency = [...all]
+      .sort((a, b) => b.games - a.games || b.winRate - a.winRate)
+      .slice(0, limit);
+
+    const byWinRate = all
+      .filter((c) => c.games >= minGames)
+      .sort((a, b) => b.winRate - a.winRate || b.games - a.games)
+      .slice(0, limit);
+
+    return {
+      gameTypeId,
+      teamSize,
+      totalTeams: fullTeams,
+      distinctCombos: combos.length,
+      repeatedCombos,
+      maxGames,
+      sampledMatches,
+      minGames,
+      byFrequency,
+      byWinRate,
+    };
+  }
+
+  /**
+   * compositions 의 무거운 부분 — 매치별 팀을 복원해 5인 조합별 판수·승수를 센다(캐시 없이).
+   * @param gameTypeId — 게임 타입
+   * @returns 풀팀 인원·풀팀 수·조합 목록·반복 조합 수·최다 판수·표본 매치 수
+   */
+  private async computeCompositionBase(gameTypeId: string) {
     // 매치×결과 단위로 팀을 복원. 캐릭터명 기준 정렬로 같은 조합은 동일 순서 보장.
     const teams: Array<{ ids: string[]; names: string[]; size: number; result: string }> =
       await this.dataSource.query(
@@ -741,23 +849,6 @@ export class MetaService {
       if (c.games > maxGames) maxGames = c.games;
     }
 
-    const all = [...combos.values()].map((c) => ({
-      ids: c.ids,
-      names: c.names,
-      games: c.games,
-      wins: c.wins,
-      winRate: c.games ? Math.round((c.wins / c.games) * 1000) / 10 : 0,
-    }));
-
-    const byFrequency = [...all]
-      .sort((a, b) => b.games - a.games || b.winRate - a.winRate)
-      .slice(0, limit);
-
-    const byWinRate = all
-      .filter((c) => c.games >= minGames)
-      .sort((a, b) => b.winRate - a.winRate || b.games - a.games)
-      .slice(0, limit);
-
     // 이 조합 통계가 도출된 표본 경기 수(win/lose 팀이 존재하는 고유 매치).
     const mrow: any[] = await this.dataSource.query(
       `SELECT count(distinct "matchId")::int AS m
@@ -768,16 +859,12 @@ export class MetaService {
     const sampledMatches = mrow[0]?.m ?? 0;
 
     return {
-      gameTypeId,
       teamSize,
-      totalTeams: fullTeams,
-      distinctCombos: combos.size,
+      fullTeams,
+      combos: [...combos.values()],
       repeatedCombos,
       maxGames,
       sampledMatches,
-      minGames,
-      byFrequency,
-      byWinRate,
     };
   }
 
