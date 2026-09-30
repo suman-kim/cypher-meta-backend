@@ -17,11 +17,12 @@ import {
   OnModuleInit,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { In, Repository } from "typeorm";
 import { Comment, Post } from "../database/entities";
 import {
   AdminCreatePostDto,
   AdminUpdatePostDto,
+  BOARD_TYPES,
   CreateCommentDto,
   CreatePostDto,
 } from "./dto";
@@ -30,6 +31,15 @@ import { hashPassword, verifyPassword } from "./password.util";
 // 게시글/댓글 id 파라미터가 올바른 UUID v4 형식인지 검사하기 위한 정규식.
 // (SQL 조회 전에 형식을 먼저 걸러 잘못된 입력을 404 로 처리)
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * 사용자에게 보이는(운영 중인) 게시판의 글인지 — 숨김 게시판(공략/유머/영상) 글은 공개 API 에서 없는 글로 취급한다.
+ * @param post — 게시글(없으면 false)
+ * @returns 공개 대상이면 true
+ */
+function isPublicPost(post: Post | null): post is Post {
+  return !!post && BOARD_TYPES.includes(post.boardType);
+}
 
 /**
  * 커뮤니티 게시글/댓글 서비스.
@@ -88,7 +98,7 @@ export class CommunityService implements OnModuleInit {
   /**
    * 특정 게시판의 게시글 목록을 페이지네이션 + 검색 조건으로 조회한다.
    * 공지(isNotice)는 목록에서 제외하되, 검색이 없을 때만 별도로 상단 고정 공지를 함께 반환한다.
-   * @param board — 게시판 타입(free/guide/humor/video 등)
+   * @param board — 게시판 타입(rating 공식전 / free 일반전 — DTO 가 운영 게시판만 허용)
    * @param page — 페이지 번호(1부터). 기본 1
    * @param pageSize — 페이지당 항목 수. 기본 15
    * @param q — 제목/내용 검색어(선택)
@@ -145,7 +155,7 @@ export class CommunityService implements OnModuleInit {
    */
   async notices(limit = 5) {
     return this.posts.find({
-      where: { isNotice: true },
+      where: { isNotice: true, boardType: In(BOARD_TYPES) }, // 숨김 게시판 공지 제외
       order: { seq: "DESC" },
       take: limit,
     });
@@ -159,7 +169,7 @@ export class CommunityService implements OnModuleInit {
   /** 홈 등에서 쓰는 전체 게시판 최신 글 (공지 제외) */
   async recent(limit = 5) {
     return this.posts.find({
-      where: { isNotice: false },
+      where: { isNotice: false, boardType: In(BOARD_TYPES) }, // 숨김 게시판 글 제외
       order: { seq: "DESC" },
       take: limit,
     });
@@ -173,7 +183,7 @@ export class CommunityService implements OnModuleInit {
   async getPost(id: string) {
     if (!UUID_RE.test(id)) throw new NotFoundException("게시글을 찾을 수 없습니다.");
     const post = await this.posts.findOne({ where: { id } });
-    if (!post) throw new NotFoundException("게시글을 찾을 수 없습니다.");
+    if (!isPublicPost(post)) throw new NotFoundException("게시글을 찾을 수 없습니다.");
     await this.posts.increment({ id }, "views", 1);
     post.views += 1;
     const comments = await this.comments.find({
@@ -210,7 +220,7 @@ export class CommunityService implements OnModuleInit {
   async likePost(id: string) {
     if (!UUID_RE.test(id)) throw new NotFoundException("게시글을 찾을 수 없습니다.");
     const post = await this.posts.findOne({ where: { id } });
-    if (!post) throw new NotFoundException("게시글을 찾을 수 없습니다.");
+    if (!isPublicPost(post)) throw new NotFoundException("게시글을 찾을 수 없습니다.");
     await this.posts.increment({ id }, "likes", 1);
     return { likes: post.likes + 1 };
   }
@@ -247,7 +257,7 @@ export class CommunityService implements OnModuleInit {
   async addComment(postId: string, dto: CreateCommentDto) {
     if (!UUID_RE.test(postId)) throw new NotFoundException("게시글을 찾을 수 없습니다.");
     const post = await this.posts.findOne({ where: { id: postId } });
-    if (!post) throw new NotFoundException("게시글을 찾을 수 없습니다.");
+    if (!isPublicPost(post)) throw new NotFoundException("게시글을 찾을 수 없습니다.");
     // 대댓글: 부모가 같은 글에 있어야 하며, 한 단계로 정규화(대댓글의 대댓글은 원 부모에 귀속)
     let parentId: string | null = null;
     if (dto.parentId) {

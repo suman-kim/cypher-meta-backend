@@ -26,9 +26,12 @@ export class Post {
   @Column({ type: "int", comment: "게시글 순번(화면 번호용, 전역 증가)" })
   seq: number;
 
-  /** 게시판: free / guide / humor / video (+ 내부용 notice) */
+  /**
+   * 게시판: rating(공식전) / free(일반전 — 옛 자유게시판 키 유지).
+   * guide/humor/video 는 운영을 멈춘 옛 게시판으로, 글은 남아 있지만 사용자 화면에서는 숨긴다(community/dto.ts 참고).
+   */
   @Index()
-  @Column({ default: "free", comment: "게시판(free/guide/humor/video, 내부 notice)" })
+  @Column({ default: "free", comment: "게시판(rating 공식전/free 일반전, 숨김: guide/humor/video)" })
   boardType: string;
 
   /** 말머리(분류): free(자유) / question(질문) / info(정보) / discussion(토론) */

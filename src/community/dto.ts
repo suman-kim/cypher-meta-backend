@@ -9,9 +9,14 @@
 import { IsBoolean, IsIn, IsInt, IsOptional, IsString, IsUUID, Length, Min } from "class-validator";
 import { Type } from "class-transformer";
 
-// 허용되는 게시판 타입 목록: 자유/공략/유머/영상.
-// DTO 의 @IsIn(BOARD_TYPES) 검증에 사용된다.
-export const BOARD_TYPES: string[] = ["free", "guide", "humor", "video"];
+// 운영 중인 게시판: rating(공식전) / free(일반전).
+// free 는 예전 '자유게시판' 키를 그대로 이어받아, 기존 글·댓글·링크(/community/free/…)가 일반전 게시판에 그대로 남는다.
+// 사용자용 DTO 의 @IsIn(BOARD_TYPES) 검증과 서비스의 공개 조회 필터에 사용된다.
+export const BOARD_TYPES: string[] = ["rating", "free"];
+// 운영을 멈춘 옛 게시판(공략/유머/영상) — 글은 DB 에 남기되 사용자 화면·API 에서는 숨긴다(관리자만 조회·이동 가능).
+export const RETIRED_BOARD_TYPES: string[] = ["guide", "humor", "video"];
+// 관리자 조회·이동용 전체 게시판 목록(운영 + 숨김)
+export const ALL_BOARD_TYPES: string[] = [...BOARD_TYPES, ...RETIRED_BOARD_TYPES];
 // 허용되는 글 카테고리 목록: 자유/질문/정보/토론.
 // DTO 의 @IsIn(CATEGORIES) 검증에 사용된다.
 export const CATEGORIES: string[] = ["free", "question", "info", "discussion"];
@@ -165,9 +170,9 @@ export class AdminListQuery {
   @IsString()
   q?: string;
 
-  // 게시판 타입 필터(선택). 지정 시 BOARD_TYPES 중 하나여야 함
+  // 게시판 타입 필터(선택). 숨김 게시판 글도 볼 수 있게 ALL_BOARD_TYPES 중 하나
   @IsOptional()
-  @IsIn(BOARD_TYPES)
+  @IsIn(ALL_BOARD_TYPES)
   board?: string;
 
   // 공지만 조회할지 여부(선택). 문자열 "true" 이면 공지(isNotice=true)만 필터
@@ -218,9 +223,9 @@ export class AdminCreatePostDto {
  * POST /community/admin/posts/:id/update 의 요청 본문을 검증한다(모든 필드 선택적, 부분 수정).
  */
 export class AdminUpdatePostDto {
-  // 게시판 타입(선택). 지정 시 BOARD_TYPES 중 하나여야 함
+  // 게시판 타입(선택). 지정 시 ALL_BOARD_TYPES 중 하나(숨김 게시판 글을 운영 게시판으로 옮길 때도 사용)
   @IsOptional()
-  @IsIn(BOARD_TYPES)
+  @IsIn(ALL_BOARD_TYPES)
   board?: string;
 
   // 글 카테고리(선택). 지정 시 CATEGORIES 중 하나여야 함
