@@ -26,6 +26,7 @@ import { DataSource, In, Repository, Table } from "typeorm";
 import { PlayerMatch, TrackedPlayer } from "../database/entities";
 import { NeopleService } from "../neople/neople.service";
 import { classifyRole } from "./character-roles";
+import { kstYear, parseNeopleDate } from "./match-parser";
 import { PlayerUltimateService } from "./player-ultimate.service";
 import { UltimateService } from "./ultimate.service";
 
@@ -97,12 +98,12 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
     const info = item?.playInfo ?? {};
     const characterId = String(info.characterId ?? "");
     if (!matchId || !characterId) return null;
-    const d = item?.date ? new Date(String(item.date).replace(" ", "T")) : null;
+    const d = parseNeopleDate(item?.date); // Neople date 는 KST(타임존 표기 없음)
     return {
       playerId,
       matchId: String(matchId),
       gameTypeId: item?.gameTypeId ?? gameType ?? null,
-      playedAt: d && !Number.isNaN(d.getTime()) ? d : null,
+      playedAt: d,
       characterId,
       characterName: info.characterName ?? null,
       result: info.result ?? null,
@@ -436,7 +437,7 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
       ultByChar.set(name, us);
 
       if (r.playedAt) {
-        const y = new Date(r.playedAt).getFullYear();
+        const y = kstYear(r.playedAt); // 연도 경계도 한국 시간 기준(서버 UTC 무관)
         const ye = yearMap.get(y) ?? { games: 0, wins: 0, dec: 0, chars: new Map(), roles: new Map(), officialRoles: new Map() };
         ye.games++;
         ye.wins += win;

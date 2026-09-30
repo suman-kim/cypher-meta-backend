@@ -3,6 +3,31 @@
 import { MatchStatSnapshot, resolveRole } from "./role-resolver";
 
 /**
+ * Neople 날짜 문자열 → Date.
+ * Neople 의 date("YYYY-MM-DD HH:MM(:SS)")는 타임존 표기가 없는 한국 시각(KST)이다.
+ * 그대로 new Date() 하면 '서버 로컬 타임존'으로 해석돼, 운영 서버(UTC)에서는 9시간 늦은 시각으로 저장된다.
+ * 그래서 +09:00 을 붙여 서버 타임존과 무관하게 해석한다.
+ * @param raw — Neople date 문자열
+ * @returns Date(형식이 이상하면 null)
+ */
+export function parseNeopleDate(raw: unknown): Date | null {
+  if (!raw) return null;
+  const s = String(raw).trim().replace(" ", "T");
+  // 이미 타임존 표기가 있으면 그대로, 없으면 KST 로 간주
+  const d = new Date(/(Z|[+-]\d{2}:?\d{2})$/i.test(s) ? s : `${s}+09:00`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * 절대 시각의 한국(KST) 기준 연도 — 서버 타임존과 무관.
+ * @param d — 시각
+ * @returns KST 연도
+ */
+export function kstYear(d: Date | string): number {
+  return new Date(new Date(d).getTime() + 9 * 3600 * 1000).getUTCFullYear();
+}
+
+/**
  * 파싱된 개별 플레이어 행. match_players 테이블에 저장할 한 명의 정보.
  */
 export interface ParsedPlayer {
@@ -124,14 +149,14 @@ export function parseMatchDetail(matchId: string, detail: any): ParsedMatch | nu
     })
     .filter((p) => p.playerId && p.characterId);
 
-  const d = detail.date ? new Date(String(detail.date).replace(" ", "T")) : null;
+  const d = parseNeopleDate(detail.date);
   return {
     match: {
       matchId,
       gameTypeId: detail.gameTypeId ?? "unknown",
       mapId: detail.map?.mapId ?? null,
       mapName: detail.map?.name ?? null,
-      playedAt: d && !Number.isNaN(d.getTime()) ? d : null,
+      playedAt: d,
     },
     players,
   };
