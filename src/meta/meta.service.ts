@@ -33,6 +33,8 @@ import { NeopleService } from "../neople/neople.service";
  */
 @Injectable()
 export class MetaService {
+  /** 궁극기 단위 조합 집계 캐시(게임 타입:인원 → 계산 시각·결과) — ultimateComboCounts 참고 */
+  private readonly comboCache = new Map<string, { at: number; data: { combos: Array<Record<string, any>>; sampledMatches: number } }>();
   /**
    * 의존성 주입 생성자.
    * @param dataSource — TypeORM DataSource. 원시 SQL 집계 쿼리 실행에 사용한다.
@@ -540,29 +542,10 @@ export class MetaService {
     const keyToName = new Map<string, string>(OFFICIAL_ROLES.map((r) => [r.key, r.name]));
     const filterRoles = (opts.roles ?? []).map((k) => keyToName.get(k)).filter((x): x is string => !!x);
 
-    // 칸 키 = characterId:ultimateType. 사전순 정렬(a<b<c)로 같은 조합 중복 제거.
-    const unit = (t: string) => `${t}."characterId" || ':' || ${t}."ultimateType"`;
-    const joins =
-      size === 2
-        ? `JOIN match_players b ON b."matchId" = a."matchId" AND b.result = a.result
-             AND b."ultimateType" IS NOT NULL AND ${unit("b")} > ${unit("a")} AND b."gameTypeId" = $1`
-        : `JOIN match_players b ON b."matchId" = a."matchId" AND b.result = a.result
-             AND b."ultimateType" IS NOT NULL AND ${unit("b")} > ${unit("a")} AND b."gameTypeId" = $1
-           JOIN match_players c ON c."matchId" = a."matchId" AND c.result = a.result
-             AND c."ultimateType" IS NOT NULL AND ${unit("c")} > ${unit("b")} AND c."gameTypeId" = $1`;
+    // 조합 표본(칸 키 조합별 판수·승수) — 무거운 계산이라 게임 타입·인원별로 10분 캐시
+    const { combos, sampledMatches } = await this.ultimateComboCounts(gameTypeId, size);
     const cols = size === 2 ? ["a", "b"] : ["a", "b", "c"];
-    const rows: any[] = await this.dataSource.query(
-      `
-      SELECT ${cols.map((t) => `${unit(t)} AS u_${t}`).join(", ")},
-             count(*)::int AS games,
-             count(*) FILTER (WHERE a.result = 'win')::int AS wins
-      FROM match_players a
-      ${joins}
-      WHERE a.result IN ('win','lose') AND a."ultimateType" IS NOT NULL AND a."gameTypeId" = $1
-      GROUP BY ${cols.map((t) => `u_${t}`).join(", ")}
-      `,
-      [gameTypeId],
-    );
+    const rows: any[] = combos;
 
     // 칸 → 캐릭터·궁극기·역할군 정보
     const ults: any[] = await this.dataSource.query(
@@ -619,22 +602,81 @@ export class MetaService {
       .map(([mix, games]) => ({ roles: mix.split("+"), games }))
       .sort((a, b) => b.games - a.games);
 
-    const mrow: any[] = await this.dataSource.query(
-      `SELECT count(distinct "matchId")::int AS m FROM match_players WHERE "gameTypeId" = $1 AND result IN ('win','lose')`,
-      [gameTypeId],
-    );
     return {
       gameTypeId,
       size,
       minGames,
       filterRoles,
       totalCombos,
-      sampledMatches: mrow[0]?.m ?? 0,
+      sampledMatches,
       distinctCombos: list.length,
       roleMixes,
       byFrequency,
       byWinRate,
     };
+  }
+
+  /**
+   * 궁극기 단위 2인·3인 조합의 판수·승수 집계(ultimateCompositions 의 원천) — 10분 메모리 캐시.
+   *
+   * 예전에는 match_players 자기 조인(2~3중)으로 DB 에서 셌는데, 운영 표본(약 20만 행)에서 100초 이상 걸렸다.
+   * 그래서 필요한 열만 한 번에 읽고(매치·결과·캐릭터·궁극기), 팀(같은 매치·같은 결과)별로
+   * 칸 키를 사전순 정렬해 조합을 메모리에서 센다(팀당 C(5,2)=10 / C(5,3)=10 개).
+   * @param gameTypeId — 게임 타입
+   * @param size — 조합 인원 2|3
+   * @returns combos: [{ u_a, u_b(, u_c), games, wins }] (칸 키 = "characterId:ultimateType"), sampledMatches: 표본 매치 수
+   */
+  private async ultimateComboCounts(
+    gameTypeId: string,
+    size: 2 | 3,
+  ): Promise<{ combos: Array<Record<string, any>>; sampledMatches: number }> {
+    const key = `${gameTypeId}:${size}`;
+    const hit = this.comboCache.get(key);
+    if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.data;
+
+    const rows: Array<{ matchId: string; result: string; characterId: string; ultimateType: string }> =
+      await this.dataSource.query(
+        `SELECT "matchId", result, "characterId", "ultimateType"
+           FROM match_players
+          WHERE "gameTypeId" = $1 AND result IN ('win','lose') AND "ultimateType" IS NOT NULL`,
+        [gameTypeId],
+      );
+    // 팀 = 같은 매치·같은 결과
+    const teams = new Map<string, { win: boolean; units: string[] }>();
+    const matches = new Set<string>();
+    for (const r of rows) {
+      matches.add(r.matchId);
+      const tk = `${r.matchId}|${r.result}`;
+      let t = teams.get(tk);
+      if (!t) teams.set(tk, (t = { win: r.result === "win", units: [] }));
+      t.units.push(`${r.characterId}:${r.ultimateType}`);
+    }
+    // 팀별 조합 세기 — 칸 키 사전순 정렬로 같은 조합은 같은 키
+    const counts = new Map<string, { games: number; wins: number }>();
+    const bump = (k: string, win: boolean) => {
+      const c = counts.get(k) ?? { games: 0, wins: 0 };
+      c.games++;
+      if (win) c.wins++;
+      counts.set(k, c);
+    };
+    for (const t of teams.values()) {
+      const u = [...new Set(t.units)].sort();
+      for (let i = 0; i < u.length; i++)
+        for (let j = i + 1; j < u.length; j++) {
+          if (size === 2) bump(`${u[i]}|${u[j]}`, t.win);
+          else for (let k = j + 1; k < u.length; k++) bump(`${u[i]}|${u[j]}|${u[k]}`, t.win);
+        }
+    }
+    const cols = size === 2 ? ["a", "b"] : ["a", "b", "c"];
+    const combos = [...counts.entries()].map(([k, c]) => {
+      const parts = k.split("|");
+      const row: Record<string, any> = { games: c.games, wins: c.wins };
+      cols.forEach((col, i) => (row[`u_${col}`] = parts[i]));
+      return row;
+    });
+    const data = { combos, sampledMatches: matches.size };
+    this.comboCache.set(key, { at: Date.now(), data });
+    return data;
   }
 
   async compositions(opts: { gameTypeId?: string; limit?: number; minGames?: number } = {}) {
