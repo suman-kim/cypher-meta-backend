@@ -9,6 +9,19 @@
 import { IsIn, IsInt, IsOptional, IsString, Max, Min } from "class-validator";
 import { Type } from "class-transformer";
 
+/** 궁극기 구분 허용값 — 1차·2차 */
+export const ULTIMATE_TYPE_VALUES = ["1st", "2nd"];
+
+/**
+ * 캐릭터 아이템 채용 통계 쿼리. GET /meta/characters/:id/items
+ */
+export class CharacterItemsQuery {
+  // 궁극기 구분(선택) — 지정 시 그 궁극기로 판별된 판만 집계
+  @IsOptional()
+  @IsIn(ULTIMATE_TYPE_VALUES)
+  ultimateType?: string;
+}
+
 /** 조합 인원 허용값 — 2인(듀오)·3인(트리오) */
 export const COMPOSITION_SIZES = [2, 3];
 

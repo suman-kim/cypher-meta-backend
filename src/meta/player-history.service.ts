@@ -22,7 +22,7 @@
  */
 import { Injectable, Logger, OnApplicationBootstrap } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { DataSource, Repository, Table } from "typeorm";
+import { DataSource, In, Repository, Table } from "typeorm";
 import { PlayerMatch, TrackedPlayer } from "../database/entities";
 import { NeopleService } from "../neople/neople.service";
 import { classifyRole } from "./character-roles";
@@ -338,14 +338,17 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
    * 공식 역할군 필드(officialPositions/primaryOfficialRole/byYear.topOfficialRole/topCharacters.ultimates)를 추가한다.
    * officialRole=null 은 "미확정"(1차·2차 역할군이 다른 캐릭터인데 궁극기를 아직 모르는 판)이다.
    * @param playerId — 대상 플레이어 ID
-   * @param gameType — "rating"(기본) | "normal"
+   * @param gameType — "rating"(기본) | "normal" | "all"(공식전+일반전 합산)
+   *   all 은 일반전에 승패·KDA 가 없으므로 승률·KDA 는 승패가 있는 판(공식전)만으로 계산하고,
+   *   판 수·캐릭터·역할 성향은 두 타입을 합쳐 계산한다.
    * @returns 개인 분석 요약 객체
    */
   async summary(playerId: string, gameType = "rating"): Promise<any> {
     await this.ensureReady();
     await this.ultimates.ensureReady();
+    const all = gameType === "all";
     const rows = await this.pmRepo.find({
-      where: { playerId, gameTypeId: gameType },
+      where: { playerId, gameTypeId: all ? In(["rating", "normal"]) : gameType },
       select: ["matchId", "playedAt", "characterId", "characterName", "result", "killCount", "deathCount", "assistCount", "playTime", "ultimateType", "ultimateCheckedAt"],
       order: { playedAt: "DESC" },
     });
@@ -357,17 +360,27 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
     const winRate = decided ? Math.round((wins / decided) * 1000) / 10 : 0;
     let playTimeSum = 0;
     let playTimeCnt = 0;
+    /**
+     * 승률(%) — all 이면 승패가 있는 판(dec)만 분모로, 그 외는 기존대로 전체 판(games)을 분모로.
+     * @param w — 승리 수
+     * @param games — 판 수
+     * @param dec — 승패가 있는 판 수
+     */
+    const rate = (w: number, games: number, dec: number): number => {
+      const denom = all ? dec : games;
+      return denom ? Math.round((w / denom) * 1000) / 10 : 0;
+    };
 
-    const charMap = new Map<string, { characterId: string; games: number; wins: number; k: number; d: number; a: number }>();
-    const roleMap = new Map<string, { games: number; wins: number }>();
+    const charMap = new Map<string, { characterId: string; games: number; wins: number; dec: number; k: number; d: number; a: number }>();
+    const roleMap = new Map<string, { games: number; wins: number; dec: number }>();
     // 공식 역할군 집계 — 키 null = 미확정
-    const officialMap = new Map<string | null, { games: number; wins: number }>();
+    const officialMap = new Map<string | null, { games: number; wins: number; dec: number }>();
     // 캐릭터별 1차/2차/미상 판 수
     const ultByChar = new Map<string, { first: number; second: number; unknown: number }>();
     let ultChecked = 0;
     const yearMap = new Map<
       number,
-      { games: number; wins: number; chars: Map<string, number>; roles: Map<string, number>; officialRoles: Map<string, number> }
+      { games: number; wins: number; dec: number; chars: Map<string, number>; roles: Map<string, number>; officialRoles: Map<string, number> }
     >();
     let kSum = 0;
     let dSum = 0;
@@ -377,33 +390,43 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
       const name = r.characterName ?? "미상";
       const role = classifyRole(name);
       const win = r.result === "win" ? 1 : 0;
+      // 승패가 있는 판(공식전). all 모드에서는 이 판만 승률·KDA 에 넣는다(일반전은 KDA 가 0 으로 저장됨)
+      const dec = r.result === "win" || r.result === "lose" ? 1 : 0;
+      const kdaOk = !all || dec === 1;
       if (r.playTime) {
         playTimeSum += r.playTime;
         playTimeCnt++;
       }
-      kSum += r.killCount;
-      dSum += r.deathCount;
-      aSum += r.assistCount;
+      if (kdaOk) {
+        kSum += r.killCount;
+        dSum += r.deathCount;
+        aSum += r.assistCount;
+      }
 
-      const c = charMap.get(name) ?? { characterId: "", games: 0, wins: 0, k: 0, d: 0, a: 0 };
+      const c = charMap.get(name) ?? { characterId: "", games: 0, wins: 0, dec: 0, k: 0, d: 0, a: 0 };
       if (!c.characterId && r.characterId) c.characterId = String(r.characterId);
       c.games++;
       c.wins += win;
-      c.k += r.killCount;
-      c.d += r.deathCount;
-      c.a += r.assistCount;
+      c.dec += dec;
+      if (kdaOk) {
+        c.k += r.killCount;
+        c.d += r.deathCount;
+        c.a += r.assistCount;
+      }
       charMap.set(name, c);
 
-      const rl = roleMap.get(role) ?? { games: 0, wins: 0 };
+      const rl = roleMap.get(role) ?? { games: 0, wins: 0, dec: 0 };
       rl.games++;
       rl.wins += win;
+      rl.dec += dec;
       roleMap.set(role, rl);
 
       // 공식 역할군: 궁극기를 알면 그 역할군, 몰라도 역할군이 하나로 정해지면 그 역할군, 아니면 미확정(null)
       const officialRole = this.ultimates.officialRoleOf(String(r.characterId), r.ultimateType);
-      const ol = officialMap.get(officialRole) ?? { games: 0, wins: 0 };
+      const ol = officialMap.get(officialRole) ?? { games: 0, wins: 0, dec: 0 };
       ol.games++;
       ol.wins += win;
+      ol.dec += dec;
       officialMap.set(officialRole, ol);
       if (r.ultimateCheckedAt) ultChecked++;
       const us = ultByChar.get(name) ?? { first: 0, second: 0, unknown: 0 };
@@ -414,9 +437,10 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
 
       if (r.playedAt) {
         const y = new Date(r.playedAt).getFullYear();
-        const ye = yearMap.get(y) ?? { games: 0, wins: 0, chars: new Map(), roles: new Map(), officialRoles: new Map() };
+        const ye = yearMap.get(y) ?? { games: 0, wins: 0, dec: 0, chars: new Map(), roles: new Map(), officialRoles: new Map() };
         ye.games++;
         ye.wins += win;
+        ye.dec += dec;
         ye.chars.set(name, (ye.chars.get(name) ?? 0) + 1);
         ye.roles.set(role, (ye.roles.get(role) ?? 0) + 1);
         if (officialRole) ye.officialRoles.set(officialRole, (ye.officialRoles.get(officialRole) ?? 0) + 1);
@@ -438,7 +462,9 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
         role: classifyRole(name),
         games: s.games,
         wins: s.wins,
-        winRate: s.games ? Math.round((s.wins / s.games) * 1000) / 10 : 0,
+        // 승패가 있는 판 수(공식전). all 모드에서 승률의 분모 — 화면에 "공식 N전 W승"으로 표시
+        decided: s.dec,
+        winRate: rate(s.wins, s.games, s.dec),
         kda: s.d ? Math.round(((s.k + s.a) / s.d) * 100) / 100 : s.k + s.a,
         // 1차/2차/미상 판 수 (공식 역할군 체계용, 기존 필드와 별개)
         ultimates: ultByChar.get(name) ?? { first: 0, second: 0, unknown: s.games },
@@ -453,7 +479,7 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
         role,
         games: s.games,
         share: total ? Math.round((s.games / total) * 1000) / 10 : 0,
-        winRate: s.games ? Math.round((s.wins / s.games) * 1000) / 10 : 0,
+        winRate: rate(s.wins, s.games, s.dec),
       }))
       .sort((x, y) => y.games - x.games);
 
@@ -462,7 +488,7 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
       .map(([year, s]) => ({
         year,
         games: s.games,
-        winRate: s.games ? Math.round((s.wins / s.games) * 1000) / 10 : 0,
+        winRate: rate(s.wins, s.games, s.dec),
         topCharacter: topOf(s.chars),
         topRole: topOf(s.roles),
         topOfficialRole: topOf(s.officialRoles), // 미확정 제외 최다 공식 역할군
@@ -474,7 +500,7 @@ export class PlayerHistoryService implements OnApplicationBootstrap {
         officialRole,
         games: s.games,
         share: total ? Math.round((s.games / total) * 1000) / 10 : 0,
-        winRate: s.games ? Math.round((s.wins / s.games) * 1000) / 10 : 0,
+        winRate: rate(s.wins, s.games, s.dec),
       }))
       .sort((x, y) => (x.officialRole === null ? 1 : 0) - (y.officialRole === null ? 1 : 0) || y.games - x.games);
     const primaryOfficialRole = officialPositions.find((p) => p.officialRole !== null)?.officialRole ?? null;

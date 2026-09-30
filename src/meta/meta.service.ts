@@ -258,10 +258,17 @@ export class MetaService {
    * 해당 캐릭터의 items(JSONB 배열)를 펼쳐 아이템별 채용 횟수를 집계하고,
    * 픽 수 대비 채용률(rate)을 계산해 슬롯(부위)별 그룹과 상위 아이템 목록을 반환한다.
    * @param characterId — 통계를 낼 캐릭터 ID.
-   * @returns { characterId, picks(픽 수), slots(부위별 아이템 그룹), items(상위 24개 아이템) }.
+   * @param ultimateType — "1st"/"2nd" 지정 시 그 궁극기로 판별된 판만 집계(캐릭터 상세 1차/2차 분리). 생략 시 전체.
+   * @returns { characterId, ultimateType, picks(픽 수), slots(부위별 아이템 그룹), items(상위 24개 아이템) }.
    */
-  async characterItems(characterId: string) {
-    const picks = await this.mpRepo.count({ where: { characterId } });
+  async characterItems(characterId: string, ultimateType?: string) {
+    const picks = await this.mpRepo.count({ where: ultimateType ? { characterId, ultimateType } : { characterId } });
+    const params: any[] = [characterId];
+    let ultFilter = "";
+    if (ultimateType) {
+      params.push(ultimateType);
+      ultFilter = `AND mp."ultimateType" = $2`;
+    }
     const rows: any[] = await this.dataSource.query(
       `
       SELECT it->>'itemId' AS "itemId",
@@ -275,10 +282,11 @@ export class MetaService {
       WHERE mp."characterId" = $1
         AND mp.items IS NOT NULL
         AND jsonb_typeof(mp.items) = 'array'
+        ${ultFilter}
       GROUP BY it->>'itemId'
       ORDER BY cnt DESC
       `,
-      [characterId],
+      params,
     );
 
     // 픽 수 대비 채용률(%) 계산 헬퍼. 픽이 없으면 0 반환.
@@ -320,6 +328,7 @@ export class MetaService {
 
     return {
       characterId,
+      ultimateType: ultimateType ?? null,
       picks,
       slots,
       items: rows.slice(0, 24).map((r) => ({

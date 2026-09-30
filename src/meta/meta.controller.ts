@@ -16,7 +16,7 @@ import { CollectionConfigService, CollectionConfigPatch } from "./collection-con
 import { AdminGuard } from "../analytics/admin.guard";
 import { UltimateService } from "./ultimate.service";
 import { PositionSystemService } from "./position-system";
-import { UltimateCompositionsQuery } from "./dto";
+import { CharacterItemsQuery, UltimateCompositionsQuery } from "./dto";
 
 /**
  * 메타 통계 및 수집 트리거를 노출하는 컨트롤러.
@@ -89,13 +89,14 @@ export class MetaController {
   }
 
   /**
-   * 특정 캐릭터의 아이템 채용 통계 조회. GET /meta/characters/:id/items.
+   * 특정 캐릭터의 아이템 채용 통계 조회. GET /meta/characters/:id/items?ultimateType=1st|2nd
    * @param id — (경로) 캐릭터 ID.
+   * @param q — ultimateType(선택): 1차/2차 궁극기 판만 집계(캐릭터 상세 1차/2차 분리)
    * @returns MetaService.characterItems() 결과(부위별/상위 아이템 채용률).
    */
   @Get("characters/:id/items")
-  items(@Param("id") id: string) {
-    return this.meta.characterItems(id);
+  items(@Param("id") id: string, @Query() q: CharacterItemsQuery) {
+    return this.meta.characterItems(id, q.ultimateType);
   }
 
   /**

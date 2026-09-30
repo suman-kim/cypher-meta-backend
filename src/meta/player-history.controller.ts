@@ -82,10 +82,11 @@ export class PlayerHistoryController {
     return this.history.listMatches(playerId, limit ? Number(limit) : undefined);
   }
 
-  /** 개인 분석 요약(공개). gameType=rating(기본)|normal. */
+  /** 개인 분석 요약(공개). gameType=rating(기본)|normal|all. */
   @Get("history/:playerId")
   summary(@Param("playerId") playerId: string, @Query("gameType") gameType?: string) {
-    const gt = gameType === "normal" ? "normal" : "rating";
+    // rating(기본) | normal | all(공식전+일반전 합산 — 플레이어 화면 '전체' 탭)
+    const gt = gameType === "normal" || gameType === "all" ? gameType : "rating";
     return this.history.summary(playerId, gt);
   }
 
