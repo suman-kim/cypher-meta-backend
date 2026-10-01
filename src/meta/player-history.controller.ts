@@ -5,18 +5,21 @@
  *
  *  - POST /meta/history/track            프로필 조회 훅(공개): watchlist 등록 + 최근분 적립
  *  - GET  /meta/history/stats            적립 현황/용량(관리자)
+ *  - GET  /meta/history/duo              플레이어 2명 비교 — 함께한 경기 / 상대 전적(공개)
  *  - POST /meta/history/run-now          수동 watchlist 갱신(관리자)
  *  - POST /meta/history/:playerId/backfill  특정 플레이어 전체 백필(관리자)
  *  - POST /meta/history/ultimates/resolve   개인 히스토리 궁극기(1차/2차) 판별 배치(관리자)
  *  - GET  /meta/history/:playerId/matches   적립 원본 매치(공개, 디버그)
  *  - GET  /meta/history/:playerId        개인 분석 요약(공개)
  *
- * 라우트 선언 순서 주의: "history/stats" 는 "history/:playerId" 보다 먼저 선언해
+ * 라우트 선언 순서 주의: "history/stats"·"history/duo" 는 "history/:playerId" 보다 먼저 선언해
  * playerId 로 잡히지 않게 한다.
  */
 import { Body, Controller, Get, Param, Post, Query, UseGuards } from "@nestjs/common";
 import { PlayerHistoryService } from "./player-history.service";
 import { PlayerUltimateService } from "./player-ultimate.service";
+import { PlayerDuoService } from "./player-duo.service";
+import { PlayerDuoQuery } from "./dto";
 import { AdminGuard } from "../analytics/admin.guard";
 
 @Controller("meta")
@@ -24,10 +27,12 @@ export class PlayerHistoryController {
   /**
    * @param history — 개인 히스토리 적립/분석 서비스
    * @param playerUltimates — 개인 히스토리 궁극기(1차/2차) 판별 서비스
+   * @param duos — 플레이어 2명 비교 서비스
    */
   constructor(
     private readonly history: PlayerHistoryService,
     private readonly playerUltimates: PlayerUltimateService,
+    private readonly duos: PlayerDuoService,
   ) {}
 
   /** 프로필 조회 훅(공개). body: { playerId, nickname? }. */
@@ -43,6 +48,16 @@ export class PlayerHistoryController {
   @UseGuards(AdminGuard)
   stats() {
     return this.history.storageStats();
+  }
+
+  /**
+   * 플레이어 2명 비교(공개) — 함께한 경기 / 상대 전적. ":playerId" 보다 먼저 선언.
+   * @param q — a·b(플레이어 ID), gameType(all|rating|normal), an·bn(닉네임, 선택)
+   * @returns 플레이어별 적립 현황, 함께한 경기·상대 전적 집계, 경기 목록
+   */
+  @Get("history/duo")
+  duo(@Query() q: PlayerDuoQuery) {
+    return this.duos.duo(q);
   }
 
   /** 수동 watchlist 갱신(관리자). */

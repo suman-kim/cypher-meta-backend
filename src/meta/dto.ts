@@ -6,7 +6,7 @@
  * (기존 meta 엔드포인트는 @Query 문자열을 직접 받는다 — 새 엔드포인트부터 DTO 사용)
  * ------------------------------------------------------------------
  */
-import { IsIn, IsInt, IsOptional, IsString, Max, Min } from "class-validator";
+import { IsIn, IsInt, IsOptional, IsString, Length, Matches, Max, Min } from "class-validator";
 import { Type } from "class-transformer";
 
 /** 궁극기 구분 허용값 — 1차·2차 */
@@ -60,4 +60,40 @@ export class UltimateCompositionsQuery {
   @IsInt()
   @Min(1)
   minGames?: number;
+}
+
+/** 플레이어 비교 기준 허용값 — 전체·공식전·일반전 */
+export const DUO_GAME_TYPES = ["all", "rating", "normal"];
+
+/** Neople playerId 형식(32자리 16진수) */
+export const PLAYER_ID_PATTERN = /^[0-9a-f]{32}$/i;
+
+/**
+ * 플레이어 2명 비교 쿼리. GET /meta/history/duo
+ */
+export class PlayerDuoQuery {
+  // 플레이어 A ID(필수) — Neople playerId
+  @Matches(PLAYER_ID_PATTERN, { message: "a 는 올바른 플레이어 ID 가 아닙니다." })
+  a: string;
+
+  // 플레이어 B ID(필수) — Neople playerId
+  @Matches(PLAYER_ID_PATTERN, { message: "b 는 올바른 플레이어 ID 가 아닙니다." })
+  b: string;
+
+  // 비교 기준(선택, 기본 all) — all | rating | normal
+  @IsOptional()
+  @IsIn(DUO_GAME_TYPES)
+  gameType?: string;
+
+  // 플레이어 A 닉네임(선택) — 처음 보는 플레이어를 적립 대상에 등록할 때 이름으로 저장
+  @IsOptional()
+  @IsString()
+  @Length(1, 30)
+  an?: string;
+
+  // 플레이어 B 닉네임(선택)
+  @IsOptional()
+  @IsString()
+  @Length(1, 30)
+  bn?: string;
 }
