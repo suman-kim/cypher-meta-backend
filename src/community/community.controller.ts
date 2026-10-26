@@ -4,15 +4,17 @@
  * 커뮤니티(게시판) HTTP 컨트롤러.
  * `/community` 하위의 모든 REST 엔드포인트를 정의한다.
  *  - 일반 사용자(비회원) 게시글/댓글 CRUD: 목록·상세·작성·추천·삭제.
- *  - 관리자 전용 게시판/공지 관리(AdminGuard, x-admin-token 헤더로 보호).
- * 실제 비즈니스 로직은 CommunityService 로 위임하고, 여기서는 라우팅과
+ *  - 관리자 전용 게시판/공지/금칙어 관리(AdminGuard, x-admin-token 헤더로 보호).
+ * 실제 비즈니스 로직은 CommunityService·BannedWordService 로 위임하고, 여기서는 라우팅과
  * 요청 파라미터(Query/Param/Body) 바인딩만 담당한다.
  * ------------------------------------------------------------------
  */
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, ParseIntPipe, Post, Query, UseGuards } from "@nestjs/common";
 import { AdminGuard } from "../analytics/admin.guard";
+import { BannedWordService } from "./banned-word.service";
 import { CommunityService } from "./community.service";
 import {
+  AddBannedWordsDto,
   AdminCreatePostDto,
   AdminListQuery,
   AdminNoticeDto,
@@ -32,8 +34,12 @@ import {
 export class CommunityController {
   /**
    * @param svc — 게시글/댓글 관련 비즈니스 로직을 담당하는 CommunityService (DI 주입)
+   * @param banned — 금칙어 목록 관리를 담당하는 BannedWordService (DI 주입)
    */
-  constructor(private readonly svc: CommunityService) {}
+  constructor(
+    private readonly svc: CommunityService,
+    private readonly banned: BannedWordService,
+  ) {}
 
   /**
    * 게시글 목록 조회 (공지 고정 + 페이지네이션 + 검색).
@@ -257,5 +263,51 @@ export class CommunityController {
   @Post("admin/comments/:id/delete")
   adminDeleteComment(@Param("id") id: string) {
     return this.svc.adminDeleteComment(id);
+  }
+
+  /**
+   * 관리자용 금칙어 목록 조회(최근 등록순).
+   * 라우트: GET /community/admin/banned-words (AdminGuard 보호)
+   * @returns 금칙어 배열({ id, word, createdAt })
+   */
+  @UseGuards(AdminGuard)
+  @Get("admin/banned-words")
+  adminBannedWords() {
+    return this.banned.list();
+  }
+
+  /**
+   * 관리자용 금칙어 추가(여러 개 한 번에). 이미 있는 단어는 건너뛴다.
+   * 라우트: POST /community/admin/banned-words (AdminGuard 보호)
+   * @param dto — 추가할 단어 목록
+   * @returns { added, skipped }
+   */
+  @UseGuards(AdminGuard)
+  @Post("admin/banned-words")
+  adminAddBannedWords(@Body() dto: AddBannedWordsDto) {
+    return this.banned.add(dto.words);
+  }
+
+  /**
+   * 관리자용 기본 금칙어 추가(없는 단어만).
+   * 라우트: POST /community/admin/banned-words/defaults (AdminGuard 보호)
+   * @returns { added, skipped }
+   */
+  @UseGuards(AdminGuard)
+  @Post("admin/banned-words/defaults")
+  adminAddDefaultBannedWords() {
+    return this.banned.addDefaults();
+  }
+
+  /**
+   * 관리자용 금칙어 삭제.
+   * 라우트: POST /community/admin/banned-words/:id/delete (AdminGuard 보호)
+   * @param id — 금칙어 ID(정수, 경로 파라미터)
+   * @returns 성공 시 { ok: true }
+   */
+  @UseGuards(AdminGuard)
+  @Post("admin/banned-words/:id/delete")
+  adminDeleteBannedWord(@Param("id", ParseIntPipe) id: number) {
+    return this.banned.remove(id);
   }
 }

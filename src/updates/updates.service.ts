@@ -8,6 +8,7 @@ import { Repository } from "typeorm";
 import { UpdateComment, UpdateNote } from "../database/entities";
 import { CreateUpdateCommentDto, CreateUpdateDto, UpdateUpdateDto } from "./dto";
 import { hashPassword, verifyPassword } from "../community/password.util";
+import { BannedWordService } from "../community/banned-word.service";
 
 /** 댓글/업데이트 id UUID 형식 검사(조회 전 잘못된 입력을 404 처리) */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -16,12 +17,15 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export class UpdatesService {
   /**
    * @param repo — UpdateNote 리포지토리(의존성 주입)
+   * @param comments — UpdateComment 리포지토리(의존성 주입)
+   * @param banned — 댓글 금칙어 검사 서비스(의존성 주입)
    */
   constructor(
     @InjectRepository(UpdateNote)
     private readonly repo: Repository<UpdateNote>,
     @InjectRepository(UpdateComment)
     private readonly comments: Repository<UpdateComment>,
+    private readonly banned: BannedWordService,
   ) {}
 
   /**
@@ -138,11 +142,13 @@ export class UpdatesService {
    * @param updateId — 대상 업데이트 노트 ID
    * @param dto — 닉네임/비밀번호/내용
    * @returns 저장된 댓글(guestPassword 제외)
+   * @throws BadRequestException — 내용/닉네임에 금칙어가 있으면(code: BANNED_WORDS)
    */
   async addComment(updateId: string, dto: CreateUpdateCommentDto) {
     if (!UUID_RE.test(updateId)) throw new NotFoundException("업데이트 노트를 찾을 수 없습니다.");
     const note = await this.repo.findOne({ where: { id: updateId, published: true } });
     if (!note) throw new NotFoundException("업데이트 노트를 찾을 수 없습니다.");
+    await this.banned.assertClean({ content: dto.content, guestName: dto.guestName });
     // 대댓글: 부모가 같은 업데이트에 있어야 하며, 한 단계로 정규화
     let parentId: string | null = null;
     if (dto.parentId) {

@@ -5,6 +5,7 @@
  * TypeORM Repository(Post, Comment)를 사용해 게시글/댓글의
  * 목록·상세·작성·추천·삭제 및 관리자 관리 기능을 구현한다.
  *  - 비회원 글/댓글은 scrypt 해시 비밀번호로 삭제 권한을 검증한다.
+ *  - 비회원 글/댓글 작성 시 금칙어 검사(BannedWordService)를 통과해야 저장된다.
  *  - guestPassword 는 응답에서 항상 제거해 노출을 방지한다.
  *  - 모듈 부팅 시 COMMUNITY_RESET 환경변수에 따라 1회 초기화가 가능하다.
  * ------------------------------------------------------------------
@@ -26,6 +27,7 @@ import {
   CreateCommentDto,
   CreatePostDto,
 } from "./dto";
+import { BannedWordService } from "./banned-word.service";
 import { hashPassword, verifyPassword } from "./password.util";
 
 // 게시글/댓글 id 파라미터가 올바른 UUID v4 형식인지 검사하기 위한 정규식.
@@ -54,10 +56,12 @@ export class CommunityService implements OnModuleInit {
   /**
    * @param posts — 게시글(Post) TypeORM 리포지토리 (DI 주입)
    * @param comments — 댓글(Comment) TypeORM 리포지토리 (DI 주입)
+   * @param banned — 금칙어 검사 서비스 (DI 주입)
    */
   constructor(
     @InjectRepository(Post) private readonly posts: Repository<Post>,
     @InjectRepository(Comment) private readonly comments: Repository<Comment>,
+    private readonly banned: BannedWordService,
   ) {}
 
   /**
@@ -197,8 +201,10 @@ export class CommunityService implements OnModuleInit {
    * 비회원 게시글을 생성한다. 비밀번호는 scrypt 로 해시해 저장한다.
    * @param dto — 작성 본문(board/category/title/content/guestName/password)
    * @returns 생성된 게시글의 { id, seq }
+   * @throws BadRequestException — 제목/내용/닉네임에 금칙어가 있으면(code: BANNED_WORDS)
    */
   async createPost(dto: CreatePostDto) {
+    await this.banned.assertClean({ title: dto.title, content: dto.content, guestName: dto.guestName });
     const post = this.posts.create({
       boardType: dto.board,
       category: dto.category ?? "free",
@@ -253,11 +259,13 @@ export class CommunityService implements OnModuleInit {
    * @param postId — 대상 게시글 UUID(형식 불량 또는 미존재 시 404)
    * @param dto — 댓글 본문(content/guestName/password)
    * @returns 저장된 댓글(guestPassword 제외)
+   * @throws BadRequestException — 내용/닉네임에 금칙어가 있으면(code: BANNED_WORDS)
    */
   async addComment(postId: string, dto: CreateCommentDto) {
     if (!UUID_RE.test(postId)) throw new NotFoundException("게시글을 찾을 수 없습니다.");
     const post = await this.posts.findOne({ where: { id: postId } });
     if (!isPublicPost(post)) throw new NotFoundException("게시글을 찾을 수 없습니다.");
+    await this.banned.assertClean({ content: dto.content, guestName: dto.guestName });
     // 대댓글: 부모가 같은 글에 있어야 하며, 한 단계로 정규화(대댓글의 대댓글은 원 부모에 귀속)
     let parentId: string | null = null;
     if (dto.parentId) {

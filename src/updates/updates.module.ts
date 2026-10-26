@@ -6,12 +6,16 @@
 import { Module } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { UpdateComment, UpdateNote } from "../database/entities";
+import { CommunityModule } from "../community/community.module";
 import { UpdatesController } from "./updates.controller";
 import { UpdatesService } from "./updates.service";
 
-/** 업데이트 노트 모듈. UpdateNote/UpdateComment 리포지토리를 제공하고 컨트롤러·서비스를 등록한다. */
+/**
+ * 업데이트 노트 모듈. UpdateNote/UpdateComment 리포지토리를 제공하고 컨트롤러·서비스를 등록한다.
+ * 댓글 금칙어 검사를 위해 CommunityModule(BannedWordService)을 가져온다.
+ */
 @Module({
-  imports: [TypeOrmModule.forFeature([UpdateNote, UpdateComment])],
+  imports: [TypeOrmModule.forFeature([UpdateNote, UpdateComment]), CommunityModule],
   controllers: [UpdatesController],
   providers: [UpdatesService],
 })

@@ -6,7 +6,19 @@
  * 타입·범위·허용값을 검증하며, 일반 사용자용과 관리자용 DTO 를 함께 정의한다.
  * ------------------------------------------------------------------
  */
-import { IsBoolean, IsIn, IsInt, IsOptional, IsString, IsUUID, Length, Min } from "class-validator";
+import {
+  ArrayMaxSize,
+  ArrayNotEmpty,
+  IsArray,
+  IsBoolean,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Length,
+  Min,
+} from "class-validator";
 import { Type } from "class-transformer";
 
 // 운영 중인 게시판: rating(공식전) / free(일반전).
@@ -259,4 +271,18 @@ export class AdminNoticeDto {
   // 공지 지정 여부(필수). true=공지 지정, false=해제
   @IsBoolean()
   isNotice: boolean;
+}
+
+/**
+ * 관리자용 금칙어 추가 본문 DTO.
+ * POST /community/admin/banned-words 의 요청 본문을 검증한다(여러 단어를 한 번에 추가).
+ */
+export class AddBannedWordsDto {
+  // 추가할 금칙어 목록(필수). 1~200개, 각 1~50자 문자열
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayMaxSize(200)
+  @IsString({ each: true })
+  @Length(1, 50, { each: true })
+  words: string[];
 }
