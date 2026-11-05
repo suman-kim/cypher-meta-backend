@@ -30,6 +30,11 @@ const EMPTY_TTL = 30; // 빈 결과 캐시(초) — 방송 시작을 빠르게 �
 const LIVEURL_TTL = 20; // 라이브 재생주소(HLS) 캐시(초) — 호버 미리보기용
 const VIDEOS_TTL = 900; // 사이퍼즈 VOD 목록 캐시(초)
 
+// 푸시 알림 감지 전용(웹 홈 목록과 캐시를 따로 쓴다)
+const ALERT_LIVES_CACHE_KEY = "chzzk:cyphers-lives-alert"; // 감지용 전체 라이브 목록 캐시 키
+const ALERT_PAGE_SIZE = 50; // 감지용 한 페이지 크기(카테고리 API 가 받는 값)
+const ALERT_MAX_PAGES = 4; // 감지용 최대 페이지 수(최대 200개 — 사이퍼즈 동시 방송 수보다 넉넉)
+
 /** 프론트엔드가 소비하는 표준 라이브 DTO(소스 API 차이를 흡수) */
 export interface ChzzkLive {
   liveId: number | string;
@@ -282,6 +287,49 @@ export class ChzzkService {
     };
     await this.cache.set(LIVES_CACHE_KEY, result, lives.length > 0 ? LIVES_TTL : EMPTY_TTL);
     return { ...result, lives: lives.slice(0, size) };
+  }
+
+  /**
+   * [푸시 알림 감지용] 지금 방송 중인 '사이퍼즈' 라이브를 가능한 한 전부(최대 200개) 가져온다.
+   *
+   * 웹 홈용 getCyphersLives 와 달리
+   *  - 상위 20개로 자르지 않고 카테고리 API 를 페이지 단위로 끝까지(상한 ALERT_MAX_PAGES) 훑는다.
+   *  - 조회에 실패하면 빈 목록 대신 예외를 던진다 → 감지 쪽이 '모두 방송 종료'로 오해하지 않고 직전 상태를 유지한다.
+   *  - 성공한 결과만 따로 60초 캐시한다(웹 홈 캐시·동작은 그대로).
+   *
+   * @returns 채널 기준 중복 제거된 라이브 목록
+   * @throws 치지직 API 연결·응답 오류 시
+   */
+  async getCyphersLivesForAlerts(): Promise<ChzzkLive[]> {
+    const cached = await this.cache.get<ChzzkLive[]>(ALERT_LIVES_CACHE_KEY);
+    if (cached) return cached;
+
+    const out: ChzzkLive[] = [];
+    const seen = new Set<string>();
+    let cursor = "";
+    for (let page = 0; page < ALERT_MAX_PAGES; page++) {
+      const r = await this.svcGet(
+        `/v2/categories/GAME/${encodeURIComponent(CATEGORY_ID)}/lives?size=${ALERT_PAGE_SIZE}&sortType=POPULAR${cursor}`,
+      );
+      const code = (r as Record<string, unknown> | null)?.code;
+      if (code != null && Number(code) !== 200) throw new Error(`치지직 카테고리 라이브 응답 코드 ${String(code)}`);
+      const { data, next } = pick(r);
+      for (const x of data) {
+        const dto = this.fromSvc(x);
+        if (dto && !seen.has(dto.channelId)) {
+          seen.add(dto.channelId);
+          out.push(dto);
+        }
+      }
+      // 다음 페이지 커서는 { concurrentUserCount, liveId } 객체로 온다.
+      const n = (next ?? null) as Record<string, unknown> | null;
+      if (data.length < ALERT_PAGE_SIZE || !n || n.liveId == null) break;
+      cursor =
+        `&concurrentUserCount=${encodeURIComponent(String(n.concurrentUserCount ?? 0))}` +
+        `&liveId=${encodeURIComponent(String(n.liveId))}`;
+    }
+    await this.cache.set(ALERT_LIVES_CACHE_KEY, out, LIVES_TTL);
+    return out;
   }
 
   /**
