@@ -3,7 +3,8 @@
  * 실행: npm test   (= node --experimental-strip-types test/push-logic.test.ts, Node 22.6+)
  *
  * 검증 대상
- *  - alert-logic.ts      : 새 방송 키 계산, 쿨다운, 새 경기 판정, 알림 문구 생성, 동시 실행 제한
+ *  - alert-logic.ts      : 새 방송 키 계산, 쿨다운, 새 경기 판정, 알림 문구 생성, 동시 실행 제한,
+ *                          사용량 한도 목록(유튜브) 조회 판단
  *  - subscription-diff.ts: 구독 동기화 차이 계산(유지·삭제·추가·표시명 변경)
  *  - push-message.ts     : FCM 페이로드 모양(앱과의 계약)
  * 이 폴더는 tsconfig 의 exclude 에 있어 nest build 결과(dist)에 들어가지 않는다.
@@ -13,6 +14,7 @@ import {
   buildMatchMessage,
   computeLiveTransition,
   decideMatchAlert,
+  decideQuotaFeed,
   filterCooldown,
   LIVE_COOLDOWN_MS,
   liveKey,
@@ -239,6 +241,34 @@ console.log("▶ FCM 페이로드(앱과의 계약)");
   check("test 알림은 match 채널", test.android.notification.channelId === "match" && test.data.kind === "test", test);
   const m = buildFcmPayload({ kind: "match", title: "T", body: "B", url: "/players/x" });
   check("match 알림은 match 채널", m.android.notification.channelId === "match");
+}
+
+console.log("▶ 유튜브 사용량 절약 — 조회 방법 판단(decideQuotaFeed)");
+{
+  const MIN = 30 * 60 * 1000;
+  check("캐시가 있으면 캐시", decideQuotaFeed(true, null, 0, MIN) === "cache");
+  check("캐시가 있으면 방금 검색했어도 캐시", decideQuotaFeed(true, 1000, 2000, MIN) === "cache");
+  check("캐시 없고 검색한 적 없으면 직접 검색", decideQuotaFeed(false, null, 0, MIN) === "fetch");
+  check("캐시 없고 30분 안이면 건너뜀", decideQuotaFeed(false, 0, MIN - 1, MIN) === "skip");
+  check("캐시 없고 30분 지나면 직접 검색", decideQuotaFeed(false, 0, MIN, MIN) === "fetch");
+
+  // 방문자가 없는 하루를 흉내 낸다: 2분마다 점검, 직접 검색 뒤 캐시는 5분(방송 없음)만 유지.
+  // 고치기 전에는 캐시가 빌 때마다 검색해 하루 240번(약 24,000유닛)이었다.
+  const TICK = 2 * 60 * 1000;
+  const EMPTY_CACHE = 5 * 60 * 1000;
+  let last: number | null = null;
+  let cacheUntil = 0;
+  let fetches = 0;
+  for (let now = 0; now < 24 * 60 * 60 * 1000; now += TICK) {
+    const action = decideQuotaFeed(now < cacheUntil, last, now, MIN);
+    if (action === "fetch") {
+      fetches++;
+      last = now;
+      cacheUntil = now + EMPTY_CACHE;
+    }
+  }
+  check("방문자 없는 하루 직접 검색 48번 이하", fetches <= 48, fetches);
+  check("하루 사용량이 한도(10,000)의 절반 이하", fetches * 102 <= 5000, fetches * 102);
 }
 
 console.log("▶ 동시 실행 제한(mapWithConcurrency)");

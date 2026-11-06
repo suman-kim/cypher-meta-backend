@@ -130,6 +130,37 @@ export function pruneCooldown(lastSentAt: Map<string, number>, now: number, cool
   for (const [k, t] of lastSentAt) if (now - t >= cooldownMs) lastSentAt.delete(k);
 }
 
+/** 사용량 한도가 있는 방송 목록(유튜브 등)을 이번 점검에서 얻는 방법 */
+export type QuotaFeedAction =
+  /** 사이트가 받아 둔 캐시를 쓴다(추가 사용량 없음) */
+  | "cache"
+  /** 직접 조회한다(사용량을 쓴다) */
+  | "fetch"
+  /** 이번 점검은 건너뛰고 직전 목록을 유지한다 */
+  | "skip";
+
+/**
+ * 사용량 한도가 있는 방송 목록(유튜브 등)을 이번 점검에서 어떻게 얻을지 정한다.
+ *  - 사이트가 받아 둔 캐시가 있으면 그걸 쓴다.
+ *  - 캐시가 없으면, 알림 작업이 마지막으로 직접 조회한 뒤 minIntervalMs 가 지났을 때만 직접 조회한다.
+ *  - 그 밖에는 건너뛴다. 방문자가 없어도 알림 작업이 한도를 다 쓰지 않게 하려는 것이다.
+ * @param hasCache — 지금 쓸 수 있는 캐시가 있는지
+ * @param lastFetchAt — 알림 작업이 마지막으로 직접 조회한 시각(ms). 아직 없으면 null
+ * @param now — 현재 시각(ms)
+ * @param minIntervalMs — 직접 조회 사이의 최소 간격(ms)
+ * @returns 이번 점검에서 쓸 방법
+ */
+export function decideQuotaFeed(
+  hasCache: boolean,
+  lastFetchAt: number | null,
+  now: number,
+  minIntervalMs: number,
+): QuotaFeedAction {
+  if (hasCache) return "cache";
+  if (lastFetchAt === null || now - lastFetchAt >= minIntervalMs) return "fetch";
+  return "skip";
+}
+
 /** 방송 시작 알림에 필요한 라이브 정보 */
 export interface LiveInfo {
   /** 채널 이름 */
