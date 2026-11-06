@@ -137,6 +137,18 @@ export class UpdatesController {
   }
 
   /**
+   * 관리자용 댓글 삭제(비밀번호 없이 — 신고 처리 등).
+   * HTTP: POST /api/updates/admin/comments/:cid/delete (AdminGuard)
+   * @param cid — 댓글 ID
+   * @returns { ok: true }
+   */
+  @UseGuards(AdminGuard)
+  @Post("admin/comments/:cid/delete")
+  adminDeleteComment(@Param("cid") cid: string) {
+    return this.svc.adminDeleteComment(cid);
+  }
+
+  /**
    * 공개 단건 조회(발행분만). 동적 세그먼트라 정적 경로(admin/latest) 뒤에 둔다.
    * HTTP: GET /api/updates/:id
    * @param id — 업데이트 노트 ID

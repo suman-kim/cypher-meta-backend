@@ -13,10 +13,12 @@ import { UpdatesService } from "./updates.service";
 /**
  * 업데이트 노트 모듈. UpdateNote/UpdateComment 리포지토리를 제공하고 컨트롤러·서비스를 등록한다.
  * 댓글 금칙어 검사를 위해 CommunityModule(BannedWordService)을 가져온다.
+ * UpdatesService 는 신고 처리(moderation)의 댓글 관리자 삭제에 쓰이도록 export 한다.
  */
 @Module({
   imports: [TypeOrmModule.forFeature([UpdateNote, UpdateComment]), CommunityModule],
   controllers: [UpdatesController],
   providers: [UpdatesService],
+  exports: [UpdatesService],
 })
 export class UpdatesModule {}

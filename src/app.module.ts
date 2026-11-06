@@ -19,6 +19,7 @@ import { VotesModule } from "./votes/votes.module";
 import { CostumesModule } from "./costumes/costumes.module";
 import { UpdatesModule } from "./updates/updates.module";
 import { PushModule } from "./push/push.module";
+import { ModerationModule } from "./moderation/moderation.module";
 
 /** 전역 설정·DB 연결과 모든 기능 모듈을 묶는 애플리케이션 루트 모듈 */
 @Module({
@@ -75,6 +76,7 @@ import { PushModule } from "./push/push.module";
     CostumesModule, // 코스튬(치장) 카탈로그 기능
     UpdatesModule, // 업데이트 노트(패치노트) 기능
     PushModule, // 모바일 앱 푸시 알림(기기·구독 API + 전적 갱신/방송 시작 감지)
+    ModerationModule, // 사용자 신고 접수·관리자 처리(Play 사용자 제작 콘텐츠 정책)
   ],
   controllers: [HealthController], // 루트/헬스체크 엔드포인트
 })

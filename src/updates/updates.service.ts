@@ -192,4 +192,20 @@ export class UpdatesService {
     await this.repo.decrement({ id: comment.updateId }, "commentCount", ids.length);
     return { ok: true };
   }
+
+  /**
+   * 관리자용 댓글 삭제(비밀번호 없이 — 신고 처리 등). 대댓글도 함께 지우고 댓글 수를 줄인다.
+   * @param id — 댓글 ID(형식 불량 또는 미존재 시 404)
+   * @returns { ok: true }
+   */
+  async adminDeleteComment(id: string) {
+    if (!UUID_RE.test(id)) throw new NotFoundException("댓글을 찾을 수 없습니다.");
+    const comment = await this.comments.findOne({ where: { id } });
+    if (!comment) throw new NotFoundException("댓글을 찾을 수 없습니다.");
+    const children = await this.comments.find({ where: { parentId: id } });
+    const ids = [id, ...children.map((c) => c.id)];
+    await this.comments.delete(ids);
+    await this.repo.decrement({ id: comment.updateId }, "commentCount", ids.length);
+    return { ok: true };
+  }
 }
