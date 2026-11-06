@@ -2,7 +2,7 @@
  * app.module.ts
  *
  * 애플리케이션 루트 모듈. 전역 설정(ConfigModule)과 데이터베이스 연결(TypeORM)을
- * 구성하고, 각 기능 모듈(Neople/Meta/Community/Analytics/Votes)을 조립한다.
+ * 구성하고, 각 기능 모듈(Neople/Meta/Community/Analytics/Votes/Push 등)을 조립한다.
  */
 import { Module } from "@nestjs/common";
 import { ConfigModule, ConfigService } from "@nestjs/config";
@@ -18,6 +18,7 @@ import { AnalyticsModule } from "./analytics/analytics.module";
 import { VotesModule } from "./votes/votes.module";
 import { CostumesModule } from "./costumes/costumes.module";
 import { UpdatesModule } from "./updates/updates.module";
+import { PushModule } from "./push/push.module";
 
 /** 전역 설정·DB 연결과 모든 기능 모듈을 묶는 애플리케이션 루트 모듈 */
 @Module({
@@ -73,6 +74,7 @@ import { UpdatesModule } from "./updates/updates.module";
     VotesModule, // 투표 기능
     CostumesModule, // 코스튬(치장) 카탈로그 기능
     UpdatesModule, // 업데이트 노트(패치노트) 기능
+    PushModule, // 모바일 앱 푸시 알림(기기·구독 API + 전적 갱신/방송 시작 감지)
   ],
   controllers: [HealthController], // 루트/헬스체크 엔드포인트
 })

@@ -7,6 +7,7 @@
  *   3) 제목/채널에 '사이퍼즈|cyphers' 포함하는 것만 필터(다른 게임 방송 배제)
  *
  * ⚠️ search.list 는 호출당 100 유닛(일 기본 쿼터 10,000)이라, 기본 15분 캐시로 호출을 억제한다.
+ *    방송 시작 알림 감지는 peekCyphersLives 로 이 캐시를 먼저 쓰고, 직접 조회는 최대 30분에 1번만 한다.
  * 유튜브엔 게임 카테고리 필터가 없어 검색어 기반이라 정확도는 치지직보다 낮다.
  */
 import { HttpException, Injectable, Logger } from "@nestjs/common";
@@ -165,6 +166,15 @@ export class YoutubeService {
       openDate: (live.actualStartTime as string) ?? null,
       url: `https://www.youtube.com/watch?v=${id}`,
     };
+  }
+
+  /**
+   * 캐시에 있는 라이브 목록만 돌려준다(없거나 만료됐으면 null). API 를 부르지 않아 사용량을 쓰지 않는다.
+   * 방송 시작 알림 감지가 사이트가 받아 둔 목록을 같이 쓰는 데 사용한다.
+   * @returns 캐시된 결과 또는 null
+   */
+  async peekCyphersLives(): Promise<YoutubeLivesResult | null> {
+    return this.cache.get<YoutubeLivesResult>(CACHE_KEY);
   }
 
   /**
