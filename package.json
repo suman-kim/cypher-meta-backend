@@ -9,7 +9,7 @@
     "start:dev": "nest start --watch",
     "start:prod": "NODE_ENV=production node dist/main",
     "start:neon": "NODE_ENV=production nest start",
-    "test": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/push-logic.test.ts && node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/moderation-logic.test.ts"
+    "test": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/push-logic.test.ts && node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/moderation-logic.test.ts && node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/analytics-logic.test.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.4",

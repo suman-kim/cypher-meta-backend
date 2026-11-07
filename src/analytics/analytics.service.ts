@@ -12,6 +12,15 @@ import { Repository } from "typeorm";
 import { Visit } from "../database/entities";
 import { TrackDto } from "./dto";
 import { parseUA } from "./ua.util";
+import {
+  clampInt,
+  fillDates,
+  kstDayStart,
+  KST_ZONE,
+  notBotSql,
+  recentKstDates,
+  VIEW_EVENTS_SQL,
+} from "./analytics-logic";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -66,6 +75,8 @@ export class AnalyticsService {
 
   /**
    * 지정한 기간(days) 동안의 방문 통계를 원시 SQL로 병렬 집계한다.
+   * 기간은 오늘을 포함한 최근 N일(한국 시간 자정 기준)이고, 검색 로봇 기록은 뺀다.
+   * 조회수는 화면을 연 기록(pageview·search)만 세고, 방문자는 모든 기록의 순 방문자다.
    *
    * @param daysInput — 집계 기간(일). 1~365로 보정되며 잘못된 값은 30으로 대체.
    * @returns 집계 결과 객체:
@@ -76,8 +87,15 @@ export class AnalyticsService {
    *   events(이벤트별), byOs(OS별)
    */
   async stats(daysInput = 30) {
-    const days = Math.min(365, Math.max(1, Math.floor(daysInput) || 30));
-    const w = `"createdAt" >= now() - interval '${days} days'`;
+    const days = clampInt(daysInput, 1, 365, 30);
+    const dates = recentKstDates(days);
+    // 기간 시작(KST 자정)과 오늘 시작(KST 자정) — 코드에서 만든 값이라 SQL 에 그대로 넣는다
+    const startIso = kstDayStart(dates[0]).toISOString();
+    const todayIso = kstDayStart(dates[dates.length - 1]).toISOString();
+    const notBot = notBotSql();
+    const w = `"createdAt" >= '${startIso}'::timestamptz AND ${notBot}`;
+    const today = `"createdAt" >= '${todayIso}'::timestamptz AND ${notBot}`;
+    const isView = `event IN (${VIEW_EVENTS_SQL})`;
 
     const [
       totalsRow,
@@ -94,21 +112,21 @@ export class AnalyticsService {
     ] = await Promise.all([
         this.repo.query(`
           SELECT
-            (SELECT count(*) FROM visits WHERE ${w})::int AS views,
+            (SELECT count(*) FROM visits WHERE ${w} AND ${isView})::int AS views,
             (SELECT count(distinct "visitorId") FROM visits WHERE ${w})::int AS visitors,
-            (SELECT count(*) FROM visits WHERE "createdAt" >= date_trunc('day', now()))::int AS "todayViews",
-            (SELECT count(distinct "visitorId") FROM visits WHERE "createdAt" >= date_trunc('day', now()))::int AS "todayVisitors"
+            (SELECT count(*) FROM visits WHERE ${today} AND ${isView})::int AS "todayViews",
+            (SELECT count(distinct "visitorId") FROM visits WHERE ${today})::int AS "todayVisitors"
         `),
         this.repo.query(`
-          SELECT to_char(date_trunc('day', "createdAt"), 'YYYY-MM-DD') AS date,
-                 count(*)::int AS views,
+          SELECT to_char(("createdAt" AT TIME ZONE '${KST_ZONE}')::date, 'YYYY-MM-DD') AS date,
+                 count(*) FILTER (WHERE ${isView})::int AS views,
                  count(distinct "visitorId")::int AS uniques
           FROM visits WHERE ${w}
           GROUP BY 1 ORDER BY 1
         `),
         this.repo.query(`
           SELECT path, count(*)::int AS views
-          FROM visits WHERE ${w} AND event = 'pageview'
+          FROM visits WHERE ${w} AND ${isView}
           GROUP BY path ORDER BY views DESC LIMIT 12
         `),
         this.repo.query(`
@@ -123,22 +141,22 @@ export class AnalyticsService {
         `),
         this.repo.query(`
           SELECT coalesce(nullif(country, ''), '??') AS country, count(*)::int AS views
-          FROM visits WHERE ${w}
+          FROM visits WHERE ${w} AND ${isView}
           GROUP BY 1 ORDER BY views DESC LIMIT 12
         `),
         this.repo.query(`
           SELECT coalesce(device, '기타') AS device, count(*)::int AS views
-          FROM visits WHERE ${w}
+          FROM visits WHERE ${w} AND ${isView}
           GROUP BY 1 ORDER BY views DESC
         `),
         this.repo.query(`
           SELECT coalesce(browser, '기타') AS browser, count(*)::int AS views
-          FROM visits WHERE ${w}
+          FROM visits WHERE ${w} AND ${isView}
           GROUP BY 1 ORDER BY views DESC LIMIT 8
         `),
         this.repo.query(`
-          SELECT extract(hour from ("createdAt" at time zone 'Asia/Seoul'))::int AS hour,
-                 count(*)::int AS views,
+          SELECT extract(hour from ("createdAt" at time zone '${KST_ZONE}'))::int AS hour,
+                 count(*) FILTER (WHERE ${isView})::int AS views,
                  count(distinct "visitorId")::int AS uniques
           FROM visits WHERE ${w}
           GROUP BY 1 ORDER BY 1
@@ -150,7 +168,7 @@ export class AnalyticsService {
         `),
         this.repo.query(`
           SELECT coalesce(nullif(os, ''), '기타') AS os, count(*)::int AS views
-          FROM visits WHERE ${w}
+          FROM visits WHERE ${w} AND ${isView}
           GROUP BY 1 ORDER BY views DESC LIMIT 8
         `),
       ]);
@@ -159,7 +177,13 @@ export class AnalyticsService {
     return {
       range: { days },
       totals,
-      byDay,
+      // 기록이 없는 날도 0으로 채워 추이 그래프가 끊기지 않게 한다
+      byDay: fillDates(
+        dates,
+        byDay as { date: string; views: number; uniques: number }[],
+        (r) => r.date,
+        (date) => ({ date, views: 0, uniques: 0 }),
+      ),
       topPages,
       topSearches,
       topReferrers,
